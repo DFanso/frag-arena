@@ -120,6 +120,21 @@ The design makes specific choices so it stays free:
 Cost guards baked in: `setInterval` tick · stop-on-empty · idle timeout · 15 Hz client send ·
 per-connection rate limiting · app-level message-size cap · `setWebSocketAutoResponse` pings.
 
+## 3D Assets
+
+Player models, the first-person weapon, and arena props (crates, barrels) are CC0-licensed
+GLB files served as static assets from `public/models/`. See
+[`public/models/CREDITS.md`](public/models/CREDITS.md) for attribution details.
+
+- **Animated players** — remote players are GLTF characters driven by `AnimationMixer`
+  (Idle/Running blend, shoot cue). The invisible box proxy is preserved for hit-detection so
+  combat is unchanged from v1.
+- **First-person gun** — a viewmodel attached to the camera with recoil and muzzle-flash
+  point-light on fire.
+- **Smart respawn** — on death a "Fragged by X" overlay appears with a 3→2→1 countdown.
+  Respawn placement uses `chooseSpawn`: the spawn point that maximises the distance to the
+  nearest living enemy, so you don't land on top of your killer.
+
 ## Project layout
 
 ```
