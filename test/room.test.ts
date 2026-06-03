@@ -584,13 +584,10 @@ describe("GameRoom death / respawn / protection / score", () => {
     });
   });
 
-  it("respawn uses the same pickSpawn slot as the initial join (D6)", async () => {
+  it("respawn places the player on one of the fixed spawn points (smart chooseSpawn)", async () => {
     const stub = env.ROOMS.getByName("t7-pickspawn");
     await runInDurableObject(stub, async (instance: GameRoom) => {
-      const inst = instance as unknown as RoomInternals & {
-        pickSpawn: (id: number) => Vec3;
-        spawn: (rec: ReturnType<typeof makeRec>) => void;
-      };
+      const inst = instance as unknown as RoomInternals;
       inst.broadcast = () => {};
       const now = Date.now();
       const dead = makeRec(3, [99, 99, 99], { st: ST_DEAD, hp: 0, lastInputAt: now });
@@ -598,9 +595,14 @@ describe("GameRoom death / respawn / protection / score", () => {
       inst.byId.set(3, dead);
       inst.players.set(dead.ws, dead);
 
-      const expected = inst.pickSpawn(3);
       inst.loopTick();
-      expect(dead.p).toEqual(expected);
+      const onSpawn = SPAWN_POINTS.some(
+        (p) =>
+          Math.abs(p[0] - dead.p[0]) < 1e-6 &&
+          Math.abs(p[1] - dead.p[1]) < 1e-6 &&
+          Math.abs(p[2] - dead.p[2]) < 1e-6,
+      );
+      expect(onSpawn).toBe(true);
     });
   });
 

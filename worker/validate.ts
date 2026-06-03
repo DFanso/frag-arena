@@ -84,3 +84,28 @@ export function clampMove(prev: Vec3, next: Vec3, dtMs: number): Vec3 {
     prev[2] + delta[2] * scale,
   ];
 }
+
+// Pick the spawn point that maximizes distance to the NEAREST living enemy.
+// No enemies -> a rand()-chosen point. Ties -> rand() among the maxima.
+export function chooseSpawn(spawnPoints: Vec3[], enemies: Vec3[], rand: () => number): Vec3 {
+  if (spawnPoints.length === 0) return [0, 0, 0];
+  if (enemies.length === 0) {
+    return spawnPoints[Math.floor(rand() * spawnPoints.length)] ?? spawnPoints[0]!;
+  }
+  let best: Vec3[] = [];
+  let bestScore = -Infinity;
+  for (const sp of spawnPoints) {
+    let nearest = Infinity;
+    for (const e of enemies) {
+      const d = len(sub(sp, e));
+      if (d < nearest) nearest = d;
+    }
+    if (nearest > bestScore + 1e-9) {
+      bestScore = nearest;
+      best = [sp];
+    } else if (Math.abs(nearest - bestScore) <= 1e-9) {
+      best.push(sp);
+    }
+  }
+  return best[Math.floor(rand() * best.length)] ?? best[0]!;
+}

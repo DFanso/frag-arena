@@ -35,7 +35,7 @@ import type {
   KillMsg,
   SpawnMsg,
 } from "./protocol";
-import { clampMove, validateShoot } from "./validate";
+import { clampMove, validateShoot, chooseSpawn } from "./validate";
 import type { Env } from "./index";
 
 interface PlayerRec {
@@ -94,14 +94,18 @@ export class GameRoom extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  // Single spawn helper used by BOTH addPlayer (initial) and spawn (respawn).
-  private pickSpawn(id: number): Vec3 {
-    return SPAWN_POINTS[(id - 1) % SPAWN_POINTS.length]!;
+  // Positions of living players other than `selfId` (combat targets to spawn away from).
+  private livingEnemyPositions(selfId: number): Vec3[] {
+    const out: Vec3[] = [];
+    for (const p of this.byId.values()) {
+      if (p.id !== selfId && p.st !== ST_DEAD) out.push(p.p);
+    }
+    return out;
   }
 
   private spawn(rec: PlayerRec): void {
     const now = Date.now();
-    rec.p = this.pickSpawn(rec.id);
+    rec.p = chooseSpawn(SPAWN_POINTS as Vec3[], this.livingEnemyPositions(rec.id), Math.random);
     rec.v = [0, 0, 0];
     rec.hp = MAX_HP;
     rec.st = ST_PROTECTED;
@@ -113,13 +117,13 @@ export class GameRoom extends DurableObject<Env> {
 
   private addPlayer(ws: WebSocket, name: string): void {
     const id = this.nextId++;
-    const spawn = this.pickSpawn(id);
     const now = Date.now();
     const rec: PlayerRec = {
       id,
       name,
       ws,
-      p: [spawn[0], spawn[1], spawn[2]],
+      p: [0, 0, 0] as Vec3, // will be set below after rec is created
+
       r: [0, 0],
       v: [0, 0, 0],
       hp: MAX_HP,
@@ -140,6 +144,7 @@ export class GameRoom extends DurableObject<Env> {
 
     this.players.set(ws, rec);
     this.byId.set(id, rec);
+    rec.p = chooseSpawn(SPAWN_POINTS as Vec3[], this.livingEnemyPositions(rec.id), Math.random);
 
     const welcome: WelcomeMsg = {
       t: "welcome",
