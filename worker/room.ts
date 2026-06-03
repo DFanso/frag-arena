@@ -13,8 +13,10 @@ import {
   WEAPONS,
   RESPAWN_MS,
   SPAWN_PROTECTION_MS,
-  encode,
+  MAX_MESSAGE_BYTES,
+  RATE_LIMIT_MSGS_PER_SEC,
   decode,
+  encode,
   sanitizeName,
 } from "./protocol";
 import type {
@@ -174,9 +176,28 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): void {
+    // App-level message-size cap (string messages only; binary is unused in v1).
+    // Use UTF-8 byte length, not character count, so the cap is in bytes.
+    if (typeof raw === "string" && new TextEncoder().encode(raw).length > MAX_MESSAGE_BYTES) {
+      ws.close(1009, "message too large");
+      return;
+    }
+
     const rec = this.players.get(ws);
     if (!rec) return;
-    // (Size cap + rate limit are added in T8, ahead of decode.)
+
+    // Per-connection sliding 1-second rate limit. Silently drop excess.
+    const now = Date.now();
+    if (now - rec.rate.windowStart >= 1000) {
+      rec.rate.windowStart = now;
+      rec.rate.count = 0;
+    }
+    if (rec.rate.count >= RATE_LIMIT_MSGS_PER_SEC) {
+      return; // dropped: budget for this window exhausted
+    }
+    rec.rate.count += 1;
+
+    // ----- existing parse + route logic continues below (decode -> in/shoot) -----
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
     const msg = decode<ClientMsg>(text);
     if (!msg) return;

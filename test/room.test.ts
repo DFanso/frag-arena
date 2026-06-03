@@ -17,6 +17,8 @@ import {
   RESPAWN_MS,
   SPAWN_PROTECTION_MS,
   SPAWN_POINTS,
+  MAX_MESSAGE_BYTES,
+  RATE_LIMIT_MSGS_PER_SEC,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -672,6 +674,133 @@ describe("GameRoom death / respawn / protection / score", () => {
       expect(shooter.st).toBe(ST_ALIVE);
       // and the shot still landed (protection only gates being shot, not shooting)
       expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage);
+    });
+  });
+});
+
+// ---- appended by T8: rate limit + message-size cap ----
+describe("GameRoom webSocketMessage guards", () => {
+  it("closes the socket with 1009 on an over-cap string message (MAX_MESSAGE_BYTES + 1)", async () => {
+    const stub = env.ROOMS.getByName("t8-oversize");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      let closedWith: number | undefined;
+      const ws = {
+        close: (code?: number) => {
+          closedWith = code;
+        },
+      } as unknown as WebSocket;
+      const inst = instance as unknown as RoomInternals;
+      const rec = makeRec(1, [0, 1, 0]);
+      rec.ws = ws;
+      inst.players.set(ws, rec);
+      inst.byId.set(1, rec);
+
+      let processed = 0;
+      inst.ingestInput = () => {
+        processed++;
+      };
+
+      // ASCII => 1 byte/char, so length === UTF-8 byteLength. One byte over the cap.
+      const over = "x".repeat(MAX_MESSAGE_BYTES + 1);
+      inst.webSocketMessage(ws, over);
+
+      expect(closedWith).toBe(1009);
+      expect(processed).toBe(0);
+    });
+  });
+
+  it("processes a message whose byte length is exactly MAX_MESSAGE_BYTES (boundary, '>' not '>=')", async () => {
+    const stub = env.ROOMS.getByName("t8-atcap");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      let closedWith: number | undefined;
+      const ws = { close: (code?: number) => { closedWith = code; } } as unknown as WebSocket;
+      const inst = instance as unknown as RoomInternals;
+      const rec = makeRec(1, [0, 1, 0]);
+      rec.ws = ws;
+      inst.players.set(ws, rec);
+      inst.byId.set(1, rec);
+
+      let processed = 0;
+      const seen: unknown[] = [];
+      inst.ingestInput = (_r, m) => {
+        processed++;
+        seen.push(m);
+      };
+
+      // Build a VALID "in" message, then pad its name-free body to EXACTLY
+      // MAX_MESSAGE_BYTES using extra whitespace inside the JSON (whitespace between
+      // tokens is ignored by JSON.parse, so the decoded message is still a valid InMsg).
+      const base = JSON.stringify({
+        t: "in", seq: 1, ts: Date.now(), p: [0, 1, 0], r: [0, 0], v: [0, 0, 0],
+      });
+      // base is well under the cap; pad with spaces appended after the closing brace's
+      // last token boundary. Insert padding right after the opening "{" so it stays valid.
+      const padCount = MAX_MESSAGE_BYTES - base.length;
+      expect(padCount).toBeGreaterThan(0); // base must fit under the cap
+      const raw = "{" + " ".repeat(padCount) + base.slice(1); // "{<spaces>...rest"
+      // raw is ASCII, so its character length equals its UTF-8 byte length.
+      expect(new TextEncoder().encode(raw).length).toBe(MAX_MESSAGE_BYTES);
+
+      inst.webSocketMessage(ws, raw);
+
+      expect(closedWith).toBeUndefined();
+      expect(processed).toBe(1);
+      expect((seen[0] as { t?: string }).t).toBe("in");
+    });
+  });
+
+  it("drops messages beyond the per-second allowance (only RATE_LIMIT_MSGS_PER_SEC processed)", async () => {
+    const stub = env.ROOMS.getByName("t8-ratelimit");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const ws = { close: () => {} } as unknown as WebSocket;
+      const inst = instance as unknown as RoomInternals;
+      const rec = makeRec(1, [0, 1, 0]);
+      rec.ws = ws;
+      // pin the window so all messages fall in the same second
+      rec.rate = { windowStart: Date.now(), count: 0 };
+      inst.players.set(ws, rec);
+      inst.byId.set(1, rec);
+
+      let processed = 0;
+      inst.ingestInput = () => { processed++; };
+
+      const raw = JSON.stringify({
+        t: "in", seq: 1, ts: Date.now(), p: [0, 1, 0], r: [0, 0], v: [0, 0, 0],
+      });
+
+      // Send exactly the allowance + 5 extra within the same window.
+      const total = RATE_LIMIT_MSGS_PER_SEC + 5;
+      for (let i = 0; i < total; i++) {
+        inst.webSocketMessage(ws, raw);
+      }
+
+      // Only up to the allowance are processed; the extra 5 are dropped.
+      expect(processed).toBe(RATE_LIMIT_MSGS_PER_SEC);
+    });
+  });
+
+  it("resets the rate window after one second, allowing new messages", async () => {
+    const stub = env.ROOMS.getByName("t8-window-reset");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const ws = { close: () => {} } as unknown as WebSocket;
+      const inst = instance as unknown as RoomInternals;
+      const rec = makeRec(1, [0, 1, 0]);
+      rec.ws = ws;
+      // window started >1s ago so the limiter must reset on the next message
+      rec.rate = { windowStart: Date.now() - 2000, count: RATE_LIMIT_MSGS_PER_SEC };
+      inst.players.set(ws, rec);
+      inst.byId.set(1, rec);
+
+      let processed = 0;
+      inst.ingestInput = () => { processed++; };
+
+      const raw = JSON.stringify({
+        t: "in", seq: 1, ts: Date.now(), p: [0, 1, 0], r: [0, 0], v: [0, 0, 0],
+      });
+      inst.webSocketMessage(ws, raw);
+
+      expect(processed).toBe(1);
+      expect(rec.rate.count).toBe(1);
     });
   });
 });
