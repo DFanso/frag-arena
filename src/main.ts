@@ -3,6 +3,7 @@
 import * as THREE from "three";
 import {
   MAX_HP,
+  RESPAWN_MS,
   INTERP_DELAY_MS,
   CLIENT_SEND_MS,
   EYE_HEIGHT,
@@ -26,6 +27,8 @@ import { LocalPlayer, RemotePlayer } from "./player";
 import { wireShooting } from "./combat";
 import { Hud } from "./hud";
 import { Sfx } from "./audio";
+import { loadAssets } from "./assets";
+import { Viewmodel } from "./viewmodel";
 
 // ---- nickname entry screen --------------------------------------------------
 
@@ -78,17 +81,24 @@ async function main(): Promise<void> {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
 
-  // Scene + lights.
+  // Scene + sky + lights (v1.1 — replaced v1 flat ambient/basic lighting).
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x87a7c0);
-  scene.fog = new THREE.Fog(0x87a7c0, 40, 90);
-  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.1);
+  scene.background = new THREE.Color(0x9fc4e8);
+  scene.fog = new THREE.Fog(0x9fc4e8, 60, 140);
+  const hemi = new THREE.HemisphereLight(0xbfe3ff, 0x4a5a3a, 0.9);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-  sun.position.set(20, 40, 10);
+  const sun = new THREE.DirectionalLight(0xfff2d8, 1.1);
+  sun.position.set(30, 50, 20);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -40; sun.shadow.camera.right = 40;
+  sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40;
+  sun.shadow.camera.far = 150;
   scene.add(sun);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-  // Camera (rides the capsule top at EYE_HEIGHT).
+  // Camera (rides the capsule top at EYE_HEIGHT). Must be in the scene for viewmodel to render.
   const camera = new THREE.PerspectiveCamera(
     75,
     window.innerWidth / window.innerHeight,
@@ -96,9 +106,13 @@ async function main(): Promise<void> {
     500,
   );
   camera.position.set(0, EYE_HEIGHT, 0);
+  scene.add(camera); // REQUIRED so the camera-attached viewmodel renders
+
+  // Load CC0 GLB assets before starting the game.
+  const reg = await loadAssets();
 
   // Arena geometry + collision octree.
-  const arena = buildArena();
+  const arena = buildArena({ crate: reg.crate, barrel: reg.barrel });
   scene.add(arena.visual);
   const octree = buildOctree(arena.collision);
 
@@ -107,6 +121,12 @@ async function main(): Promise<void> {
   const hud = new Hud();
   const sfx = new Sfx();
   let local: LocalPlayer | undefined;
+
+  // First-person weapon viewmodel (attached to camera).
+  const viewmodel = new Viewmodel(camera, reg.gun);
+
+  // Death state tracking.
+  let deadUntil = 0;
 
   // Reflect pointer-lock state into the HUD and unlock audio on first lock (user gesture).
   controls.onLockChange((locked: boolean) => {
@@ -122,11 +142,16 @@ async function main(): Promise<void> {
   // Remote players registry + the latest snapshot's player list (kill-feed names + scoreboard).
   const remotes = new Map<number, RemotePlayer>();
   let myId = -1;
+  let latestSnap: PlayerSnap[] = [];
+
+  function nameOf(id: number): string {
+    return latestSnap.find((p) => p.id === id)?.name ?? "";
+  }
 
   function ensureRemote(ps: PlayerSnap): RemotePlayer {
     let rp = remotes.get(ps.id);
     if (rp === undefined) {
-      rp = new RemotePlayer(ps.id, ps.name, null);
+      rp = new RemotePlayer(ps.id, ps.name, reg.character);
       scene.add(rp.group);
       remotes.set(ps.id, rp);
     }
@@ -147,6 +172,7 @@ async function main(): Promise<void> {
   });
 
   net.on("snap", (m: SnapMsg) => {
+    latestSnap = m.players;
     hud.setPlayers(m.players);
     for (const ps of m.players) {
       if (ps.id === myId) {
@@ -159,6 +185,7 @@ async function main(): Promise<void> {
       } else {
         const rp = ensureRemote(ps);
         rp.addSnapshot({ t: m.ts, p: ps.p, r: ps.r });
+        rp.setVelocity(ps.v);
       }
     }
   });
@@ -169,16 +196,25 @@ async function main(): Promise<void> {
       hud.flashHitMarker();
       sfx.hit();
     }
+    // Trigger shoot cue on the remote who fired.
+    remotes.get(m.by)?.playShoot();
   });
 
   net.on("kill", (m: KillMsg) => {
     hud.addKill(m);
-    if (m.on === myId) sfx.death();
+    if (m.on === myId) {
+      sfx.death();
+      hud.showDeath(nameOf(m.by));
+      deadUntil = performance.now() + RESPAWN_MS;
+    }
+    // Trigger shoot cue on the remote who got the kill.
+    remotes.get(m.by)?.playShoot();
   });
 
   net.on("spawn", (m: SpawnMsg) => {
     if (m.id === myId) {
       hud.setHealth(MAX_HP);
+      hud.hideDeath();
       controls.setPosition(m.p);
     }
   });
@@ -203,6 +239,8 @@ async function main(): Promise<void> {
     send: (m) => net.send(m),
     onLocalShoot: (hit) => {
       sfx.shoot();
+      viewmodel.recoil();
+      viewmodel.flash();
       if (hit) hud.flashHitMarker();
     },
   });
@@ -239,17 +277,28 @@ async function main(): Promise<void> {
     requestAnimationFrame(frame);
     const now = performance.now();
     const dt = Math.min(0.1, (now - lastFrame) / 1000); // clamp after tab-switches
+    const dtMs = dt * 1000;
     lastFrame = now;
 
     // Local predicted movement.
     controls.update(dt);
 
     // Send InMsg at CLIENT_SEND_MS cadence (NOT per frame) — exactly one cadence line.
-    sendAccum = sendInputIfDue(sendAccum, dt * 1000);
+    sendAccum = sendInputIfDue(sendAccum, dtMs);
 
-    // Interpolate remote players ~INTERP_DELAY_MS in the past.
+    // Update remote players (interpolation + animation mixer).
     const renderTime = Date.now() - INTERP_DELAY_MS;
-    for (const rp of remotes.values()) rp.update(renderTime, dt * 1000);
+    for (const rp of remotes.values()) rp.update(renderTime, dtMs);
+
+    // Update viewmodel (recoil ease + muzzle flash).
+    viewmodel.update(dtMs);
+
+    // Death countdown HUD update.
+    if (deadUntil > 0) {
+      const rem = deadUntil - performance.now();
+      hud.updateDeath(rem);
+      if (rem <= 0) deadUntil = 0;
+    }
 
     // HUD upkeep (prune expired kill-feed lines).
     hud.renderKillFeed();
