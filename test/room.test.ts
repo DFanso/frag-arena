@@ -6,11 +6,19 @@ import { describe, it, expect } from "vitest";
 import {
   MAX_PLAYERS_PER_ROOM,
   SERVER_TICK_HZ,
+  MAX_HP,
+  ST_ALIVE,
+  MAX_MOVE_SPEED,
+  MOVE_SPEED_TOLERANCE,
 } from "../worker/protocol";
 import type {
   WelcomeMsg,
   LeaveMsg,
   ServerMsg,
+  InMsg,
+  Vec3,
+  Rot,
+  PlayerStateCode,
 } from "../worker/protocol";
 
 // Get a stub for a room by name.
@@ -123,5 +131,97 @@ describe("GameRoom join/leave/cap", () => {
 
     overflow.close();
     for (const ws of sockets) ws.close();
+  });
+});
+
+// Build a bare PlayerRec for direct method tests (matches the v2 contract shape: NO posBuf).
+function makeRec(now: number, p: Vec3 = [0, 1, 0]) {
+  return {
+    id: 1,
+    name: "anon",
+    ws: undefined as unknown as WebSocket,
+    p,
+    r: [0, 0] as Rot,
+    v: [0, 0, 0] as Vec3,
+    hp: MAX_HP,
+    st: ST_ALIVE as PlayerStateCode,
+    frags: 0,
+    deaths: 0,
+    lastShotAt: 0,
+    lastInputAt: now,
+    respawnAt: 0,
+    protectedUntil: 0,
+    lastSeq: 0,
+    rate: { windowStart: now, count: 0 },
+  };
+}
+
+describe("GameRoom ingestInput / clampMove (server dt)", () => {
+  it("updates p/r/v, lastSeq, lastInputAt on a plausible input", async () => {
+    const stub = roomStub("t4-ingest");
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      // Set lastInputAt ~50ms in the past so server dt (Date.now()-lastInputAt) is small.
+      const rec = makeRec(Date.now() - 50, [0, 1, 0]);
+      const m: InMsg = {
+        t: "in",
+        seq: 5,
+        ts: 1_234_567, // arbitrary client clock — must be IGNORED for the budget
+        p: [0.4, 1, 0], // ~0.4 units over ~50ms => ~8 u/s, under MAX_MOVE_SPEED
+        r: [0.5, -0.2],
+        v: [1, 0, 0],
+      };
+      i.ingestInput(rec, m);
+      expect(rec.p).toEqual([0.4, 1, 0]);
+      expect(rec.r).toEqual([0.5, -0.2]);
+      expect(rec.v).toEqual([1, 0, 0]);
+      expect(rec.lastSeq).toBe(5);
+      // lastInputAt is the SERVER wall-clock at ingest, not the client ts.
+      expect(rec.lastInputAt).not.toBe(1_234_567);
+      expect(typeof rec.lastInputAt).toBe("number");
+    });
+  });
+
+  it("clamps an implausible teleport", async () => {
+    const stub = roomStub("t4-clamp");
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      const rec = makeRec(Date.now() - 50, [0, 1, 0]);
+      const m: InMsg = {
+        t: "in",
+        seq: 1,
+        ts: 0,
+        p: [1000, 1, 0], // 1000 units in ~50ms => implausible
+        r: [0, 0],
+        v: [0, 0, 0],
+      };
+      i.ingestInput(rec, m);
+      // Accepted position must be far closer to the previous than the claim.
+      // Max plausible distance ~ MAX_MOVE_SPEED * tolerance * dt (dt ~ 0.05s).
+      const maxDist = MAX_MOVE_SPEED * MOVE_SPEED_TOLERANCE * 0.25; // generous upper bound
+      expect(rec.p[0]).toBeLessThan(maxDist);
+      expect(rec.p[0]).not.toBe(1000);
+    });
+  });
+
+  it("ignores an inflated client m.ts (budget comes from server dt)", async () => {
+    const stub = roomStub("t4-spoof-ts");
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      const rec = makeRec(Date.now() - 50, [0, 1, 0]);
+      const m: InMsg = {
+        t: "in",
+        seq: 1,
+        // A malicious client inflates ts to fake a huge dt and sneak a teleport.
+        ts: Date.now() + 10_000_000,
+        p: [1000, 1, 0],
+        r: [0, 0],
+        v: [0, 0, 0],
+      };
+      i.ingestInput(rec, m);
+      // The spoofed ts must NOT widen the budget; the teleport is still snapped.
+      expect(rec.p[0]).not.toBe(1000);
+      expect(rec.p[0]).toBeLessThan(5);
+    });
   });
 });

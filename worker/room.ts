@@ -8,6 +8,7 @@ import {
   ST_ALIVE,
   SPAWN_POINTS,
   encode,
+  decode,
   sanitizeName,
 } from "./protocol";
 import type {
@@ -18,7 +19,10 @@ import type {
   ServerMsg,
   WelcomeMsg,
   LeaveMsg,
+  ClientMsg,
+  InMsg,
 } from "./protocol";
+import { clampMove } from "./validate";
 import type { Env } from "./index";
 
 interface PlayerRec {
@@ -144,6 +148,32 @@ export class GameRoom extends DurableObject<Env> {
 
   webSocketError(ws: WebSocket): void {
     this.removePlayer(ws);
+  }
+
+  webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): void {
+    const rec = this.players.get(ws);
+    if (!rec) return;
+    // (Size cap + rate limit are added in T8, ahead of decode.)
+    const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
+    const msg = decode<ClientMsg>(text);
+    if (!msg) return;
+    if (msg.t === "in") {
+      this.ingestInput(rec, msg);
+    }
+    // "shoot" handling is added in T6.
+  }
+
+  private ingestInput(rec: PlayerRec, m: InMsg): void {
+    const now = Date.now();
+    // Anti-teleport uses TRUSTED server dt (not the client-controlled m.ts).
+    const dtMs = rec.lastInputAt
+      ? Math.min(Math.max(now - rec.lastInputAt, 1), 250)
+      : 50;
+    rec.p = clampMove(rec.p, m.p, dtMs);
+    rec.r = [m.r[0], m.r[1]];
+    rec.v = [m.v[0], m.v[1], m.v[2]];
+    rec.lastInputAt = now;
+    rec.lastSeq = m.seq;
   }
 
   // --- tick loop (filled in by T5; defined here so add/remove can call it) ---
