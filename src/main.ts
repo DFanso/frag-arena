@@ -99,8 +99,8 @@ async function main(): Promise<void> {
 
   // Arena geometry + collision octree.
   const arena = buildArena();
-  scene.add(arena);
-  const octree = buildOctree(arena);
+  scene.add(arena.visual);
+  const octree = buildOctree(arena.collision);
 
   // Controls, HUD, SFX. LocalPlayer is created once we know our id (on welcome).
   const controls = new FpsControls(camera, renderer.domElement, octree);
