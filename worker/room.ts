@@ -6,8 +6,11 @@ import {
   MAX_PLAYERS_PER_ROOM,
   MAX_HP,
   ST_ALIVE,
+  ST_PROTECTED,
+  ST_DEAD,
   SPAWN_POINTS,
   IDLE_TIMEOUT_MS,
+  WEAPONS,
   encode,
   decode,
   sanitizeName,
@@ -23,8 +26,10 @@ import type {
   SnapMsg,
   ClientMsg,
   InMsg,
+  ShootMsg,
+  HitMsg,
 } from "./protocol";
-import { clampMove } from "./validate";
+import { clampMove, validateShoot } from "./validate";
 import type { Env } from "./index";
 
 interface PlayerRec {
@@ -161,8 +166,12 @@ export class GameRoom extends DurableObject<Env> {
     if (!msg) return;
     if (msg.t === "in") {
       this.ingestInput(rec, msg);
+      return;
     }
-    // "shoot" handling is added in T6.
+    if (msg.t === "shoot") {
+      this.handleShoot(rec, msg);
+      return;
+    }
   }
 
   private ingestInput(rec: PlayerRec, m: InMsg): void {
@@ -176,6 +185,53 @@ export class GameRoom extends DurableObject<Env> {
     rec.v = [m.v[0], m.v[1], m.v[2]];
     rec.lastInputAt = now;
     rec.lastSeq = m.seq;
+  }
+
+  private handleShoot(rec: PlayerRec, m: ShootMsg): void {
+    const now = Date.now();
+    const weapon = WEAPONS[m.w] ?? WEAPONS[0]!;
+    const target = m.hit === null ? null : (this.byId.get(m.hit) ?? null);
+
+    // Combat validates against CURRENT server-authoritative positions (no lag-comp
+    // rewind in v1, per contract D4).
+    const reject = validateShoot(
+      { p: rec.p, st: rec.st, lastShotAt: rec.lastShotAt },
+      target === null ? null : { p: target.p, st: target.st },
+      m.d,
+      weapon,
+      now,
+    );
+
+    // "dead" / "firerate" mean the gun did NOT discharge: leave lastShotAt untouched.
+    if (reject === "dead" || reject === "firerate") return;
+
+    // The gun fired. Record the shot time and drop our own spawn protection.
+    rec.lastShotAt = now;
+    if (rec.st === ST_PROTECTED) {
+      rec.st = ST_ALIVE;
+      rec.protectedUntil = 0;
+    }
+
+    // Fired, but the claimed hit was not valid (no/dead/protected target, range, aim).
+    if (reject !== null || target === null) return;
+
+    const dmg = m.head ? weapon.damage * weapon.headMult : weapon.damage;
+    this.applyDamage(target, dmg, rec, m.head);
+  }
+
+  // Apply damage and broadcast a hit. (T7 extends this with death/respawn/scoring.)
+  private applyDamage(target: PlayerRec, dmg: number, killer: PlayerRec, head: boolean): void {
+    if (target.st === ST_DEAD || target.st === ST_PROTECTED) return;
+    target.hp -= dmg;
+    const hit: HitMsg = {
+      t: "hit",
+      by: killer.id,
+      on: target.id,
+      dmg,
+      hp: Math.max(0, target.hp),
+      head,
+    };
+    this.broadcast(hit);
   }
 
   // --- tick loop (filled in by T5; defined here so add/remove can call it) ---

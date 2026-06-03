@@ -7,11 +7,13 @@ import {
   MAX_PLAYERS_PER_ROOM,
   SERVER_TICK_HZ,
   MAX_HP,
-  ST_ALIVE,
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
+  ST_ALIVE,
   IDLE_TIMEOUT_MS,
+  WEAPONS,
 } from "../worker/protocol";
+import type { GameRoom } from "../worker/room";
 import type {
   WelcomeMsg,
   LeaveMsg,
@@ -136,8 +138,8 @@ describe("GameRoom join/leave/cap", () => {
   });
 });
 
-// Build a bare PlayerRec for direct method tests (matches the v2 contract shape: NO posBuf).
-function makeRec(now: number, p: Vec3 = [0, 1, 0]) {
+// Build a bare PlayerRec for direct ingestInput tests (matches the v2 contract shape: NO posBuf).
+function makeRecIngest(now: number, p: Vec3 = [0, 1, 0]) {
   return {
     id: 1,
     name: "anon",
@@ -164,7 +166,7 @@ describe("GameRoom ingestInput / clampMove (server dt)", () => {
     await runInDurableObject(stub, (instance) => {
       const i = instance as any;
       // Set lastInputAt ~50ms in the past so server dt (Date.now()-lastInputAt) is small.
-      const rec = makeRec(Date.now() - 50, [0, 1, 0]);
+      const rec = makeRecIngest(Date.now() - 50, [0, 1, 0]);
       const m: InMsg = {
         t: "in",
         seq: 5,
@@ -188,7 +190,7 @@ describe("GameRoom ingestInput / clampMove (server dt)", () => {
     const stub = roomStub("t4-clamp");
     await runInDurableObject(stub, (instance) => {
       const i = instance as any;
-      const rec = makeRec(Date.now() - 50, [0, 1, 0]);
+      const rec = makeRecIngest(Date.now() - 50, [0, 1, 0]);
       const m: InMsg = {
         t: "in",
         seq: 1,
@@ -210,7 +212,7 @@ describe("GameRoom ingestInput / clampMove (server dt)", () => {
     const stub = roomStub("t4-spoof-ts");
     await runInDurableObject(stub, (instance) => {
       const i = instance as any;
-      const rec = makeRec(Date.now() - 50, [0, 1, 0]);
+      const rec = makeRecIngest(Date.now() - 50, [0, 1, 0]);
       const m: InMsg = {
         t: "in",
         seq: 1,
@@ -327,5 +329,185 @@ describe("GameRoom loopTick / idle / stop-on-empty", () => {
     });
 
     a.close();
+  });
+});
+
+// ---- appended by T6: handleShoot damage + hit broadcast ----
+
+// Reusable PlayerRec-shaped factory for direct DO method tests (v2 D4 shape: NO posBuf).
+// Reused by T6/T7/T8. A plain object stub stands in for the WebSocket; tests that need
+// to observe outbound messages override the private `broadcast` instead of using a socket.
+function makeRec(
+  id: number,
+  p: Vec3,
+  opts: Partial<{
+    st: number;
+    hp: number;
+    lastShotAt: number;
+    protectedUntil: number;
+    lastInputAt: number;
+  }> = {},
+) {
+  const ws = {} as unknown as WebSocket;
+  return {
+    id,
+    name: `p${id}`,
+    ws,
+    p,
+    r: [0, 0] as [number, number],
+    v: [0, 0, 0] as Vec3,
+    hp: opts.hp ?? MAX_HP,
+    st: opts.st ?? ST_ALIVE,
+    frags: 0,
+    deaths: 0,
+    lastShotAt: opts.lastShotAt ?? 0,
+    lastInputAt: opts.lastInputAt ?? Date.now(),
+    respawnAt: 0,
+    protectedUntil: opts.protectedUntil ?? 0,
+    lastSeq: 0,
+    rate: { windowStart: Date.now(), count: 0 },
+  };
+}
+
+// Narrow view of the private GameRoom members the appended tests reach into.
+type RoomInternals = {
+  players: Map<WebSocket, ReturnType<typeof makeRec>>;
+  byId: Map<number, ReturnType<typeof makeRec>>;
+  broadcast: (m: unknown) => void;
+  handleShoot: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
+  loopTick: () => void;
+  ingestInput: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
+  webSocketMessage: (ws: WebSocket, raw: string | ArrayBuffer) => void;
+};
+
+describe("GameRoom.handleShoot", () => {
+  it("a valid hit reduces target hp and broadcasts a hit", async () => {
+    const stub = env.ROOMS.getByName("shoot-valid");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+      inst.players.set(shooter.ws, shooter);
+      inst.players.set(target.ws, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot",
+        seq: 1,
+        ts: now,
+        o: [0, 1, 0],
+        d: [0, 0, 1],
+        w: 0,
+        hit: 2,
+        head: false,
+      });
+
+      expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage);
+      const hit = broadcasts.find((b) => (b as { t?: string }).t === "hit") as
+        | { t: string; by: number; on: number; dmg: number; hp: number; head: boolean }
+        | undefined;
+      expect(hit).toBeDefined();
+      expect(hit!.by).toBe(1);
+      expect(hit!.on).toBe(2);
+      expect(hit!.dmg).toBe(WEAPONS[0]!.damage);
+      expect(hit!.hp).toBe(MAX_HP - WEAPONS[0]!.damage);
+      expect(shooter.lastShotAt).toBeGreaterThanOrEqual(now);
+    });
+  });
+
+  it("a headshot applies the head multiplier", async () => {
+    const stub = env.ROOMS.getByName("shoot-head");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: true,
+      });
+      expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage * WEAPONS[0]!.headMult);
+    });
+  });
+
+  it("a rejected shot (firerate) does NOT reduce hp and emits no hit", async () => {
+    const stub = env.ROOMS.getByName("shoot-firerate");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const now = Date.now();
+      // lastShotAt only 10ms ago => below cooldownMs-25 grace => firerate reject
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 10 });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+      expect(target.hp).toBe(MAX_HP);
+      expect(broadcasts.find((b) => (b as { t?: string }).t === "hit")).toBeUndefined();
+    });
+  });
+
+  it("a rejected shot (range) does NOT reduce hp", async () => {
+    const stub = env.ROOMS.getByName("shoot-range");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, WEAPONS[0]!.maxRange + 50]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+      expect(target.hp).toBe(MAX_HP);
+    });
+  });
+
+  it("a rejected shot (aim) does NOT reduce hp", async () => {
+    const stub = env.ROOMS.getByName("shoot-aim");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+      // claim firing along +x while target is at +z => aim reject
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [1, 0, 0], w: 0, hit: 2, head: false,
+      });
+      expect(target.hp).toBe(MAX_HP);
+    });
+  });
+
+  it("a missing target id (hit not in byId) is treated as no-target and does nothing", async () => {
+    const stub = env.ROOMS.getByName("shoot-missing");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      inst.byId.set(1, shooter);
+      // claim a hit on id 99 which is not present
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 99, head: false,
+      });
+      // gun still discharges (records lastShotAt) but no hit is broadcast
+      expect(shooter.lastShotAt).toBeGreaterThanOrEqual(now);
+      expect(broadcasts.find((b) => (b as { t?: string }).t === "hit")).toBeUndefined();
+    });
   });
 });
