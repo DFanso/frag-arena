@@ -10,8 +10,13 @@ import {
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
   ST_ALIVE,
+  ST_DEAD,
+  ST_PROTECTED,
   IDLE_TIMEOUT_MS,
   WEAPONS,
+  RESPAWN_MS,
+  SPAWN_PROTECTION_MS,
+  SPAWN_POINTS,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -508,6 +513,165 @@ describe("GameRoom.handleShoot", () => {
       // gun still discharges (records lastShotAt) but no hit is broadcast
       expect(shooter.lastShotAt).toBeGreaterThanOrEqual(now);
       expect(broadcasts.find((b) => (b as { t?: string }).t === "hit")).toBeUndefined();
+    });
+  });
+});
+
+// ---- appended by T7: death / respawn / spawn-protection / score ----
+describe("GameRoom death / respawn / protection / score", () => {
+  it("a lethal hit sets the target DEAD, increments score, and broadcasts a kill", async () => {
+    const stub = env.ROOMS.getByName("t7-lethal");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, 10], { hp: 10 }); // 25 dmg is lethal
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+
+      expect(target.st).toBe(ST_DEAD);
+      expect(target.hp).toBeLessThanOrEqual(0);
+      expect(target.deaths).toBe(1);
+      expect(shooter.frags).toBe(1);
+      const kill = broadcasts.find((b) => (b as { t?: string }).t === "kill") as
+        | { t: string; by: number; on: number; w: number }
+        | undefined;
+      expect(kill).toBeDefined();
+      expect(kill!.by).toBe(1);
+      expect(kill!.on).toBe(2);
+      expect(kill!.w).toBe(0);
+    });
+  });
+
+  it("loopTick respawns a DEAD player after RESPAWN_MS: restores hp + protection + broadcasts spawn", async () => {
+    const stub = env.ROOMS.getByName("t7-respawn");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+
+      const now = Date.now();
+      const dead = makeRec(2, [5, 1, 5], { st: ST_DEAD, hp: 0, lastInputAt: now });
+      dead.respawnAt = now - 1; // already due
+      inst.byId.set(2, dead);
+      inst.players.set(dead.ws, dead);
+
+      inst.loopTick();
+
+      expect(dead.st).toBe(ST_PROTECTED);
+      expect(dead.hp).toBe(MAX_HP);
+      expect(dead.protectedUntil).toBeGreaterThan(Date.now());
+      // respawned at one of the fixed spawn points
+      const onSpawnPoint = SPAWN_POINTS.some(
+        (sp) => sp[0] === dead.p[0] && sp[1] === dead.p[1] && sp[2] === dead.p[2],
+      );
+      expect(onSpawnPoint).toBe(true);
+      const spawn = broadcasts.find((b) => (b as { t?: string }).t === "spawn") as
+        | { t: string; id: number; p: Vec3; prot: number }
+        | undefined;
+      expect(spawn).toBeDefined();
+      expect(spawn!.id).toBe(2);
+      expect(spawn!.prot).toBe(SPAWN_PROTECTION_MS);
+    });
+  });
+
+  it("respawn uses the same pickSpawn slot as the initial join (D6)", async () => {
+    const stub = env.ROOMS.getByName("t7-pickspawn");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        pickSpawn: (id: number) => Vec3;
+        spawn: (rec: ReturnType<typeof makeRec>) => void;
+      };
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const dead = makeRec(3, [99, 99, 99], { st: ST_DEAD, hp: 0, lastInputAt: now });
+      dead.respawnAt = now - 1;
+      inst.byId.set(3, dead);
+      inst.players.set(dead.ws, dead);
+
+      const expected = inst.pickSpawn(3);
+      inst.loopTick();
+      expect(dead.p).toEqual(expected);
+    });
+  });
+
+  it("a DEAD player is NOT respawned before RESPAWN_MS has elapsed", async () => {
+    const stub = env.ROOMS.getByName("t7-too-early");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const dead = makeRec(2, [5, 1, 5], { st: ST_DEAD, hp: 0, lastInputAt: now });
+      dead.respawnAt = now + RESPAWN_MS; // not due yet
+      inst.byId.set(2, dead);
+      inst.players.set(dead.ws, dead);
+      inst.loopTick();
+      expect(dead.st).toBe(ST_DEAD);
+      expect(dead.hp).toBe(0);
+    });
+  });
+
+  it("loopTick clears protection once now > protectedUntil", async () => {
+    const stub = env.ROOMS.getByName("t7-prot-expire");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const p = makeRec(3, [5, 1, 5], { st: ST_PROTECTED, protectedUntil: now - 1, lastInputAt: now });
+      inst.byId.set(3, p);
+      inst.players.set(p.ws, p);
+      inst.loopTick();
+      expect(p.st).toBe(ST_ALIVE);
+    });
+  });
+
+  it("a spawn-protected player takes no damage", async () => {
+    const stub = env.ROOMS.getByName("t7-prot-nodmg");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, 10], { st: ST_PROTECTED, protectedUntil: now + 5000 });
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+      expect(target.hp).toBe(MAX_HP);
+      expect(broadcasts.find((b) => (b as { t?: string }).t === "hit")).toBeUndefined();
+    });
+  });
+
+  it("firing while protected drops the shooter's own protection", async () => {
+    const stub = env.ROOMS.getByName("t7-fire-drops-prot");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      // shooter is protected and fires a valid shot at an alive target
+      const shooter = makeRec(1, [0, 1, 0], {
+        st: ST_PROTECTED,
+        protectedUntil: now + 5000,
+        lastShotAt: now - 1000,
+      });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+      expect(shooter.st).toBe(ST_ALIVE);
+      // and the shot still landed (protection only gates being shot, not shooting)
+      expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage);
     });
   });
 });

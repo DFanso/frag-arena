@@ -11,6 +11,8 @@ import {
   SPAWN_POINTS,
   IDLE_TIMEOUT_MS,
   WEAPONS,
+  RESPAWN_MS,
+  SPAWN_PROTECTION_MS,
   encode,
   decode,
   sanitizeName,
@@ -28,6 +30,8 @@ import type {
   InMsg,
   ShootMsg,
   HitMsg,
+  KillMsg,
+  SpawnMsg,
 } from "./protocol";
 import { clampMove, validateShoot } from "./validate";
 import type { Env } from "./index";
@@ -91,6 +95,18 @@ export class GameRoom extends DurableObject<Env> {
   // Single spawn helper used by BOTH addPlayer (initial) and spawn (respawn).
   private pickSpawn(id: number): Vec3 {
     return SPAWN_POINTS[(id - 1) % SPAWN_POINTS.length]!;
+  }
+
+  private spawn(rec: PlayerRec): void {
+    const now = Date.now();
+    rec.p = this.pickSpawn(rec.id);
+    rec.v = [0, 0, 0];
+    rec.hp = MAX_HP;
+    rec.st = ST_PROTECTED;
+    rec.protectedUntil = now + SPAWN_PROTECTION_MS;
+    rec.respawnAt = 0;
+    const msg: SpawnMsg = { t: "spawn", id: rec.id, p: rec.p, prot: SPAWN_PROTECTION_MS };
+    this.broadcast(msg);
   }
 
   private addPlayer(ws: WebSocket, name: string): void {
@@ -192,6 +208,13 @@ export class GameRoom extends DurableObject<Env> {
     const weapon = WEAPONS[m.w] ?? WEAPONS[0]!;
     const target = m.hit === null ? null : (this.byId.get(m.hit) ?? null);
 
+    // Firing while spawn-protected drops the protection immediately so that
+    // validateShoot (which only accepts ST_ALIVE shooters) sees the right state.
+    if (rec.st === ST_PROTECTED) {
+      rec.st = ST_ALIVE;
+      rec.protectedUntil = 0;
+    }
+
     // Combat validates against CURRENT server-authoritative positions (no lag-comp
     // rewind in v1, per contract D4).
     const reject = validateShoot(
@@ -205,12 +228,8 @@ export class GameRoom extends DurableObject<Env> {
     // "dead" / "firerate" mean the gun did NOT discharge: leave lastShotAt untouched.
     if (reject === "dead" || reject === "firerate") return;
 
-    // The gun fired. Record the shot time and drop our own spawn protection.
+    // The gun fired. Record the shot time.
     rec.lastShotAt = now;
-    if (rec.st === ST_PROTECTED) {
-      rec.st = ST_ALIVE;
-      rec.protectedUntil = 0;
-    }
 
     // Fired, but the claimed hit was not valid (no/dead/protected target, range, aim).
     if (reject !== null || target === null) return;
@@ -219,7 +238,7 @@ export class GameRoom extends DurableObject<Env> {
     this.applyDamage(target, dmg, rec, m.head);
   }
 
-  // Apply damage and broadcast a hit. (T7 extends this with death/respawn/scoring.)
+  // Apply damage, broadcast a hit, and handle death/respawn/scoring (T7).
   private applyDamage(target: PlayerRec, dmg: number, killer: PlayerRec, head: boolean): void {
     if (target.st === ST_DEAD || target.st === ST_PROTECTED) return;
     target.hp -= dmg;
@@ -232,6 +251,16 @@ export class GameRoom extends DurableObject<Env> {
       head,
     };
     this.broadcast(hit);
+
+    if (target.hp <= 0) {
+      target.hp = 0;
+      target.st = ST_DEAD;
+      target.deaths += 1;
+      target.respawnAt = Date.now() + RESPAWN_MS;
+      killer.frags += 1;
+      const kill: KillMsg = { t: "kill", by: killer.id, on: target.id, w: 0 };
+      this.broadcast(kill);
+    }
   }
 
   // --- tick loop (filled in by T5; defined here so add/remove can call it) ---
@@ -255,9 +284,14 @@ export class GameRoom extends DurableObject<Env> {
   private loopTick(): void {
     const now = Date.now();
 
-    // 1) Advance respawn/protection timers. (Bodies arrive in T7; this is the hook.)
-    //    T7 replaces this block with: DEAD && now>=respawnAt -> this.spawn(rec);
-    //    PROTECTED && now>protectedUntil -> rec.st = ST_ALIVE.
+    // 1) Advance respawn / spawn-protection timers (T7).
+    for (const rec of this.players.values()) {
+      if (rec.st === ST_DEAD && rec.respawnAt !== 0 && now >= rec.respawnAt) {
+        this.spawn(rec);
+      } else if (rec.st === ST_PROTECTED && now > rec.protectedUntil) {
+        rec.st = ST_ALIVE;
+      }
+    }
 
     // 2) Drop idle players via removePlayer (broadcasts LeaveMsg + stopLoopIfEmpty).
     //    Iterate a SNAPSHOT so removePlayer can mutate the maps during iteration.
