@@ -96,7 +96,7 @@ async function main(): Promise<void> {
   sun.shadow.camera.far = 150;
   scene.add(sun);
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
 
   // Camera (rides the capsule top at EYE_HEIGHT). Must be in the scene for viewmodel to render.
   const camera = new THREE.PerspectiveCamera(
