@@ -1,23 +1,19 @@
+// worker/index.ts — Worker entry: Env types, /api/health, and the single GameRoom export.
 import { Hono } from "hono";
-import { DurableObject } from "cloudflare:workers";
+import type { GameRoom } from "./room";
 
 export interface Env {
-  ASSETS: Fetcher;
   ROOMS: DurableObjectNamespace<GameRoom>;
-}
-
-// Placeholder authoritative game-room Durable Object. The real implementation lands
-// in T3 (worker/room.ts), at which point this file becomes `export { GameRoom } from
-// "./room";` and this inline stub is deleted. Exported here so the wrangler v1
-// migration (new_sqlite_classes:["GameRoom"]) resolves to a real class.
-export class GameRoom extends DurableObject<Env> {
-  override fetch(_req: Request): Response {
-    return new Response("Expected WebSocket upgrade", { status: 426 });
-  }
+  ASSETS: Fetcher;
 }
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/api/health", (c) => c.json({ ok: true }));
 
+// /ws/:room forwarding is finalized in T9.
+
 export default app;
+
+// Exactly ONE exported GameRoom; the migration new_sqlite_classes:["GameRoom"] binds here.
+export { GameRoom } from "./room";
