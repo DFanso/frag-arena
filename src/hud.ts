@@ -1,6 +1,7 @@
 // src/hud.ts — HUD overlay: crosshair, health bar, prompt, scoreboard, kill feed, hit marker.
 import { MAX_HP } from "../worker/protocol";
 import type { PlayerSnap, KillMsg } from "../worker/protocol";
+import { countdownText, deathMessage } from "./death-ui";
 
 export const KILL_FEED_TTL_MS = 5000;
 
@@ -42,6 +43,9 @@ export class Hud {
   private latestPlayers: PlayerSnap[] = [];
   private myId = -1;
   private hitMarkerTimer: ReturnType<typeof setTimeout> | undefined;
+  private deathEl!: HTMLDivElement;
+  private deathTitle!: HTMLDivElement;
+  private deathCount!: HTMLDivElement;
 
   constructor(parent: HTMLElement = document.body) {
     const root = document.createElement("div");
@@ -113,6 +117,19 @@ export class Hud {
       "color:#fff;font-size:14px;padding:14px 18px;";
     root.appendChild(sb);
     this.scoreboard = sb;
+
+    // Death overlay (hidden until local player dies).
+    this.deathEl = document.createElement("div");
+    this.deathEl.style.cssText =
+      "position:fixed;inset:0;display:none;flex-direction:column;align-items:center;" +
+      "justify-content:center;gap:12px;background:rgba(80,0,0,0.35);color:#fff;" +
+      "font:700 28px sans-serif;text-shadow:0 2px 6px #000;pointer-events:none;z-index:20";
+    this.deathTitle = document.createElement("div");
+    this.deathCount = document.createElement("div");
+    this.deathCount.style.cssText = "font-size:20px;opacity:0.9";
+    this.deathEl.appendChild(this.deathTitle);
+    this.deathEl.appendChild(this.deathCount);
+    root.appendChild(this.deathEl);
 
     parent.appendChild(root);
     this.root = root;
@@ -191,6 +208,18 @@ export class Hud {
       '<th style="text-align:right">FRAGS</th><th style="text-align:right">DEATHS</th></tr>' +
       rows +
       "</table>";
+  }
+
+  showDeath(killerName: string): void {
+    this.deathTitle.textContent = deathMessage(killerName);
+    this.deathCount.textContent = countdownText(99999);
+    this.deathEl.style.display = "flex";
+  }
+  updateDeath(remainingMs: number): void {
+    this.deathCount.textContent = countdownText(remainingMs);
+  }
+  hideDeath(): void {
+    this.deathEl.style.display = "none";
   }
 
   /** Detach listeners and remove the overlay (for teardown/tests). */
