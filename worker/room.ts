@@ -7,6 +7,7 @@ import {
   MAX_HP,
   ST_ALIVE,
   SPAWN_POINTS,
+  IDLE_TIMEOUT_MS,
   encode,
   decode,
   sanitizeName,
@@ -19,6 +20,7 @@ import type {
   ServerMsg,
   WelcomeMsg,
   LeaveMsg,
+  SnapMsg,
   ClientMsg,
   InMsg,
 } from "./protocol";
@@ -195,9 +197,37 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private loopTick(): void {
-    // Implemented in T5: advance respawn/protection timers, drop idle players,
-    // build + broadcast a SnapMsg.
+    const now = Date.now();
+
+    // 1) Advance respawn/protection timers. (Bodies arrive in T7; this is the hook.)
+    //    T7 replaces this block with: DEAD && now>=respawnAt -> this.spawn(rec);
+    //    PROTECTED && now>protectedUntil -> rec.st = ST_ALIVE.
+
+    // 2) Drop idle players via removePlayer (broadcasts LeaveMsg + stopLoopIfEmpty).
+    //    Iterate a SNAPSHOT so removePlayer can mutate the maps during iteration.
+    for (const rec of [...this.players.values()]) {
+      if (now - rec.lastInputAt > IDLE_TIMEOUT_MS) {
+        this.removePlayer(rec.ws);
+      }
+    }
+    if (this.players.size === 0) return;
+
+    // 3) Build + broadcast a SnapMsg.
     this.tick++;
+    const ack: Record<number, number> = {};
+    const snaps: PlayerSnap[] = [];
+    for (const rec of this.players.values()) {
+      ack[rec.id] = rec.lastSeq;
+      snaps.push(this.snapOf(rec));
+    }
+    const snap: SnapMsg = {
+      t: "snap",
+      tick: this.tick,
+      ts: now,
+      ack,
+      players: snaps,
+    };
+    this.broadcast(snap);
   }
 
   // --- helpers ---

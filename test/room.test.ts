@@ -10,6 +10,7 @@ import {
   ST_ALIVE,
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
+  IDLE_TIMEOUT_MS,
 } from "../worker/protocol";
 import type {
   WelcomeMsg,
@@ -19,6 +20,7 @@ import type {
   Vec3,
   Rot,
   PlayerStateCode,
+  SnapMsg,
 } from "../worker/protocol";
 
 // Get a stub for a room by name.
@@ -223,5 +225,107 @@ describe("GameRoom ingestInput / clampMove (server dt)", () => {
       expect(rec.p[0]).not.toBe(1000);
       expect(rec.p[0]).toBeLessThan(5);
     });
+  });
+});
+
+describe("GameRoom loopTick / idle / stop-on-empty", () => {
+  it("broadcasts a SnapMsg with tick, ts, ack, and all players", async () => {
+    const stub = roomStub("t5-snap");
+    const a = await connect(stub, "alice");
+    const welcomeA = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    const b = await connect(stub, "bob");
+    const welcomeB = await nextMessage<WelcomeMsg>(b, ["welcome"]);
+
+    // Send one input from each so their lastSeq values differ.
+    const inA: InMsg = { t: "in", seq: 1290, ts: 1, p: [1, 1, 0], r: [0, 0], v: [0, 0, 0] };
+    const inB: InMsg = { t: "in", seq: 44, ts: 1, p: [2, 1, 0], r: [0, 0], v: [0, 0, 0] };
+    a.send(JSON.stringify(inA));
+    b.send(JSON.stringify(inB));
+
+    // Drive exactly one tick deterministically, then read the snapshot off a.
+    const snapPromise = nextMessage<SnapMsg>(a, ["snap"]);
+    await runInDurableObject(stub, (instance) => (instance as any).loopTick());
+    const snap = await snapPromise;
+
+    expect(snap.t).toBe("snap");
+    expect(typeof snap.tick).toBe("number");
+    expect(typeof snap.ts).toBe("number");
+    // ack maps player id -> last processed seq.
+    expect(snap.ack[welcomeA.id]).toBe(1290);
+    expect(snap.ack[welcomeB.id]).toBe(44);
+    // players array contains both ids.
+    expect(snap.players.map((p) => p.id).sort((x, y) => x - y)).toEqual(
+      [welcomeA.id, welcomeB.id].sort((x, y) => x - y),
+    );
+    // a player snap carries the contract fields.
+    const pa = snap.players.find((p) => p.id === welcomeA.id)!;
+    expect(pa).toMatchObject({
+      id: welcomeA.id,
+      name: "alice",
+      hp: MAX_HP,
+      st: ST_ALIVE,
+      frags: 0,
+      deaths: 0,
+    });
+
+    a.close();
+    b.close();
+  });
+
+  it("drops an idle player and broadcasts a leave (via removePlayer)", async () => {
+    const stub = roomStub("t5-idle");
+    const a = await connect(stub, "active");
+    const welcomeA = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    const b = await connect(stub, "idle");
+    const welcomeB = await nextMessage<WelcomeMsg>(b, ["welcome"]);
+
+    // Force b's lastInputAt far into the past so the next tick drops it as idle.
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      const recB = i.byId.get(welcomeB.id);
+      recB.lastInputAt = Date.now() - IDLE_TIMEOUT_MS - 1000;
+    });
+
+    // a must receive a leave naming b's id when the idle tick fires.
+    const leavePromise = nextMessage<LeaveMsg>(a, ["leave"]);
+    await runInDurableObject(stub, (instance) => (instance as any).loopTick());
+    const leave = await leavePromise;
+    expect(leave.t).toBe("leave");
+    expect(leave.id).toBe(welcomeB.id);
+
+    // b removed; a remains.
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      expect(i.byId.has(welcomeB.id)).toBe(false);
+      expect(i.byId.has(welcomeA.id)).toBe(true);
+      expect(i.players.size).toBe(1);
+    });
+
+    a.close();
+  });
+
+  it("startLoop sets tickHandle; stopLoopIfEmpty clears it when empty", async () => {
+    const stub = roomStub("t5-stop");
+    const a = await connect(stub, "p");
+    await nextMessage<WelcomeMsg>(a, ["welcome"]);
+
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      // A player is connected, so the loop should be running.
+      i.startLoop();
+      expect(i.tickHandle).not.toBeUndefined();
+
+      // Non-empty: stop is a no-op.
+      i.stopLoopIfEmpty();
+      expect(i.tickHandle).not.toBeUndefined();
+
+      // Empty the maps, then stop.
+      i.players.clear();
+      i.byId.clear();
+      i.stopLoopIfEmpty();
+      expect(i.tickHandle).toBeUndefined();
+    });
+
+    a.close();
   });
 });
