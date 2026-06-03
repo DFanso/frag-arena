@@ -126,7 +126,7 @@ async function main(): Promise<void> {
   function ensureRemote(ps: PlayerSnap): RemotePlayer {
     let rp = remotes.get(ps.id);
     if (rp === undefined) {
-      rp = new RemotePlayer(ps.id, ps.name);
+      rp = new RemotePlayer(ps.id, ps.name, null);
       scene.add(rp.group);
       remotes.set(ps.id, rp);
     }
@@ -249,7 +249,7 @@ async function main(): Promise<void> {
 
     // Interpolate remote players ~INTERP_DELAY_MS in the past.
     const renderTime = Date.now() - INTERP_DELAY_MS;
-    for (const rp of remotes.values()) rp.update(renderTime);
+    for (const rp of remotes.values()) rp.update(renderTime, dt * 1000);
 
     // HUD upkeep (prune expired kill-feed lines).
     hud.renderKillFeed();
