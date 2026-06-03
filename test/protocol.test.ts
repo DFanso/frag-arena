@@ -1,0 +1,117 @@
+import { describe, it, expect } from "vitest";
+import {
+  encode,
+  decode,
+  sanitizeRoom,
+  sanitizeName,
+  SERVER_TICK_HZ,
+  type InMsg,
+  type ShootMsg,
+  type SnapMsg,
+} from "../worker/protocol";
+
+describe("encode/decode round-trip", () => {
+  it("round-trips an InMsg", () => {
+    const msg: InMsg = {
+      t: "in",
+      seq: 1287,
+      ts: 1717430000123,
+      p: [1, 2, 3],
+      r: [0.5, -0.25],
+      v: [0, 0, -1],
+    };
+    const raw = encode(msg);
+    expect(typeof raw).toBe("string");
+    const back = decode<InMsg>(raw);
+    expect(back).toEqual(msg);
+  });
+
+  it("round-trips a ShootMsg", () => {
+    const msg: ShootMsg = {
+      t: "shoot",
+      seq: 42,
+      ts: 1717430000150,
+      o: [0, 1, 0],
+      d: [0, 0, -1],
+      w: 0,
+      hit: 7,
+      head: true,
+    };
+    const raw = encode(msg);
+    const back = decode<ShootMsg>(raw);
+    expect(back).toEqual(msg);
+  });
+
+  it("round-trips a SnapMsg", () => {
+    const msg: SnapMsg = {
+      t: "snap",
+      tick: 48213,
+      ts: 1717430000200,
+      ack: { 7: 1290 },
+      players: [
+        {
+          id: 7,
+          name: "neo",
+          p: [10, 1, -4],
+          r: [0.1, 0.2],
+          v: [0, 0, 0],
+          hp: 74,
+          st: 1,
+          frags: 3,
+          deaths: 1,
+        },
+      ],
+    };
+    const raw = encode(msg);
+    const back = decode<SnapMsg>(raw);
+    expect(back).toEqual(msg);
+  });
+});
+
+describe("decode error handling", () => {
+  it("returns null on invalid JSON", () => {
+    expect(decode<InMsg>("not json {")).toBeNull();
+  });
+});
+
+describe("sanitizeRoom", () => {
+  it("defaults undefined/empty to 'public'", () => {
+    expect(sanitizeRoom(undefined)).toBe("public");
+    expect(sanitizeRoom("")).toBe("public");
+  });
+  it("lowercases and strips disallowed characters", () => {
+    expect(sanitizeRoom("Hello World!")).toBe("helloworld");
+    expect(sanitizeRoom("Room_42-x")).toBe("room_42-x");
+  });
+  it("falls back to 'public' when nothing survives stripping", () => {
+    expect(sanitizeRoom("!!!@@@")).toBe("public");
+  });
+  it("caps length at 24 characters", () => {
+    const long = "a".repeat(40);
+    expect(sanitizeRoom(long)).toBe("a".repeat(24));
+    expect(sanitizeRoom(long).length).toBe(24);
+  });
+});
+
+describe("sanitizeName", () => {
+  it("defaults undefined/empty to 'anon'", () => {
+    expect(sanitizeName(undefined)).toBe("anon");
+    expect(sanitizeName("")).toBe("anon");
+    expect(sanitizeName("   ")).toBe("anon");
+  });
+  it("trims and strips non-ascii characters", () => {
+    expect(sanitizeName("  héllo  ")).toBe("hllo");
+    expect(sanitizeName("ab\u{1F600}cd")).toBe("abcd");
+  });
+  it("caps length at 16 characters", () => {
+    const long = "x".repeat(30);
+    expect(sanitizeName(long)).toBe("x".repeat(16));
+    expect(sanitizeName(long).length).toBe(16);
+  });
+});
+
+describe("constants", () => {
+  it("exposes SERVER_TICK_HZ", () => {
+    expect(SERVER_TICK_HZ).toBe(20);
+  });
+});
