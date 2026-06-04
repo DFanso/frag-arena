@@ -91,7 +91,7 @@ function loadTexture(loader: THREE.TextureLoader, url: string): Promise<THREE.Te
   );
 }
 
-export async function loadAssets(onProgress?: (label: string) => void): Promise<AssetRegistry> {
+export async function loadAssets(onProgress?: (loaded: number, total: number, label: string) => void): Promise<AssetRegistry> {
   const loader = new GLTFLoader();
   const texLoader = new THREE.TextureLoader();
   const reg: AssetRegistry = {
@@ -102,15 +102,22 @@ export async function loadAssets(onProgress?: (label: string) => void): Promise<
     textures: { grass: null, stone: null },
   };
 
-  for (const key of Object.keys(FILES) as GltfKey[]) {
-    onProgress?.(`Loading ${key}…`);
+  const gltfKeys = Object.keys(FILES) as GltfKey[];
+  const texKeys = Object.keys(TEXTURES) as Array<"grass" | "stone">;
+  const total = gltfKeys.length + texKeys.length;
+  let loaded = 0;
+
+  for (const key of gltfKeys) {
+    onProgress?.(loaded, total, key);
     reg[key] = await loadGltf(loader, FILES[key]);
+    loaded += 1;
   }
-  for (const key of Object.keys(TEXTURES) as Array<"grass" | "stone">) {
-    onProgress?.(`Loading ${key} texture…`);
+  for (const key of texKeys) {
+    onProgress?.(loaded, total, `${key} texture`);
     reg.textures[key] = await loadTexture(texLoader, TEXTURES[key]);
+    loaded += 1;
   }
 
-  onProgress?.("Ready");
+  onProgress?.(total, total, "Ready");
   return reg;
 }

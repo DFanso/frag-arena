@@ -122,9 +122,18 @@ export class RemotePlayer {
       });
       this.group.add(model);
       this.mixer = new THREE.AnimationMixer(model);
-      for (const clip of character.animations) {
-        this.actions[clip.name] = this.mixer.clipAction(clip);
-      }
+      const clips = character.animations;
+      for (const clip of clips) this.actions[clip.name] = this.mixer.clipAction(clip);
+      // Canonical aliases (Idle / Running / Punch) resolved by fuzzy clip-name match, so
+      // any rigged humanoid works regardless of its clip naming (e.g. "CharacterArmature|Run").
+      const find = (...subs: string[]): THREE.AnimationClip | undefined =>
+        clips.find((c) => subs.some((s) => c.name.toLowerCase().includes(s)));
+      const alias = (key: string, clip: THREE.AnimationClip | undefined): void => {
+        if (clip && !this.actions[key]) this.actions[key] = this.mixer!.clipAction(clip);
+      };
+      alias("Idle", find("idle") ?? clips[0]);
+      alias("Running", find("run", "sprint") ?? find("walk") ?? find("idle") ?? clips[0]);
+      alias("Punch", find("punch", "attack", "shoot", "fire", "kick", "wave"));
       this.current = this.actions["Idle"] ?? null;
       this.current?.play();
     } else {

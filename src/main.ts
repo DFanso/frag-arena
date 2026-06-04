@@ -121,10 +121,43 @@ function showStartScreen(): Promise<{ name: string; room: string }> {
   });
 }
 
+// Full-screen loading overlay shown while CC0 assets preload (progress bar + label).
+function showLoading(): { update: (loaded: number, total: number, label: string) => void; done: () => void } {
+  const overlay = document.createElement("div");
+  overlay.style.cssText =
+    "position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;" +
+    "justify-content:center;gap:18px;background:#0b1020;color:#cfe;font-family:monospace";
+  const title = document.createElement("div");
+  title.textContent = "CF-FPS";
+  title.style.cssText = "font-size:42px;font-weight:bold;letter-spacing:3px";
+  const barOuter = document.createElement("div");
+  barOuter.style.cssText =
+    "width:320px;height:14px;border:1px solid #2a3a5a;border-radius:7px;overflow:hidden;background:#10162c";
+  const barInner = document.createElement("div");
+  barInner.style.cssText = "height:100%;width:0%;background:linear-gradient(90deg,#3ad6ff,#6fffa0);transition:width .12s";
+  barOuter.appendChild(barInner);
+  const label = document.createElement("div");
+  label.style.cssText = "font-size:13px;opacity:.8";
+  label.textContent = "Loading…";
+  overlay.appendChild(title);
+  overlay.appendChild(barOuter);
+  overlay.appendChild(label);
+  document.body.appendChild(overlay);
+  return {
+    update: (loaded, total, lbl) => {
+      const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      barInner.style.width = `${pct}%`;
+      label.textContent = `Loading assets… ${pct}%  ·  ${lbl}`;
+    },
+    done: () => overlay.remove(),
+  };
+}
+
 // ---- main -------------------------------------------------------------------
 
 async function main(): Promise<void> {
   const { name, room } = await showStartScreen();
+  const loading = showLoading();
 
   // Renderer + canvas (#game from index.html).
   const canvas = document.getElementById("game") as HTMLCanvasElement;
@@ -159,13 +192,14 @@ async function main(): Promise<void> {
   camera.position.set(0, EYE_HEIGHT, 0);
   scene.add(camera); // REQUIRED so the camera-attached viewmodel renders
 
-  // Load CC0 GLB assets before starting the game.
-  const reg = await loadAssets();
+  // Load CC0 GLB assets before starting the game (progress shown on the loading overlay).
+  const reg = await loadAssets((l, t, lbl) => loading.update(l, t, lbl));
 
   // Arena geometry + collision octree.
   const arena = buildArena(reg);
   scene.add(arena.visual);
   const octree = buildOctree(arena.collision);
+  loading.done(); // assets + arena ready — reveal the game
 
   // Controls, HUD, SFX. LocalPlayer is created once we know our id (on welcome).
   const controls = new FpsControls(camera, renderer.domElement, octree);
