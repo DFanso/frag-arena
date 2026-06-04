@@ -5,7 +5,8 @@ import { GLTFLoader, type GLTF } from "three/addons/loaders/GLTFLoader.js";
 
 type GltfKey =
   | "character" | "gun" | "crate" | "barrel" | "container" | "rock" | "tree"
-  | "grass" | "bush" | "fern" | "fence" | "log";
+  | "grass" | "bush" | "fern" | "fence" | "log"
+  | "kitWall" | "kitDoor" | "kitFloor" | "kitStairs" | "kitColumn" | "kitBroken";
 
 export interface AssetRegistry {
   character: GLTF | null;
@@ -20,6 +21,13 @@ export interface AssetRegistry {
   fern: GLTF | null;
   fence: GLTF | null;  // modular wall/fence segment
   log: GLTF | null;    // standing log (pillar)
+  // Stone/castle modular kit pieces (Kenney Castle Kit, CC0).
+  kitWall: GLTF | null;
+  kitDoor: GLTF | null;
+  kitFloor: GLTF | null;
+  kitStairs: GLTF | null;
+  kitColumn: GLTF | null;
+  kitBroken: GLTF | null;
   textures: { grass: THREE.Texture | null; stone: THREE.Texture | null };
 }
 
@@ -36,6 +44,12 @@ const FILES: Record<GltfKey, string> = {
   fern: "/models/fern.glb",
   fence: "/models/fence.glb",
   log: "/models/log.glb",
+  kitWall: "/models/kit_wall.glb",
+  kitDoor: "/models/kit_door.glb",
+  kitFloor: "/models/kit_floor.glb",
+  kitStairs: "/models/kit_stairs.glb",
+  kitColumn: "/models/kit_column.glb",
+  kitBroken: "/models/kit_broken.glb",
 };
 
 const TEXTURES: Record<"grass" | "stone", string> = {
@@ -71,6 +85,7 @@ export async function loadAssets(onProgress?: (label: string) => void): Promise<
   const reg: AssetRegistry = {
     character: null, gun: null, crate: null, barrel: null, container: null, rock: null, tree: null,
     grass: null, bush: null, fern: null, fence: null, log: null,
+    kitWall: null, kitDoor: null, kitFloor: null, kitStairs: null, kitColumn: null, kitBroken: null,
     textures: { grass: null, stone: null },
   };
 
