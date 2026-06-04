@@ -23,6 +23,11 @@ Credit is given here voluntarily because these creators are great.
 | `kit_stairs.glb` | Castle Kit — Stairs Stone | Kenney | CC0 1.0 | Kenney Castle Kit 2.0 — https://kenney.nl/assets/castle-kit |
 | `kit_column.glb` | Castle Kit — Wall Pillar (column) | Kenney | CC0 1.0 | Kenney Castle Kit 2.0 — https://kenney.nl/assets/castle-kit |
 | `kit_broken.glb` | Castle Kit — Wall Half (short/half wall as ruined segment) | Kenney | CC0 1.0 | Kenney Castle Kit 2.0 — https://kenney.nl/assets/castle-kit |
+| `building_tower.glb` | Stone Tower (whole watch tower / keep) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/Rz4U5dZJz8 |
+| `building_house1.glb` | Fantasy House (complete cottage with tiled roof) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/BH2XHWUNmF |
+| `building_house2.glb` | House (complete small house, distinct style) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/roqiHdrpgc |
+| `building_shed.glb` | Storage Shed (small wooden shed) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/JrFL3mLOKg |
+| `building_shed2.glb` | Hut (small wood/stone outbuilding) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/4MJWbyd6vw |
 
 ## Textures
 

@@ -6,7 +6,8 @@ import { GLTFLoader, type GLTF } from "three/addons/loaders/GLTFLoader.js";
 type GltfKey =
   | "character" | "gun" | "crate" | "barrel" | "container" | "rock" | "tree"
   | "grass" | "bush" | "fern" | "fence" | "log"
-  | "kitWall" | "kitDoor" | "kitFloor" | "kitStairs" | "kitColumn" | "kitBroken";
+  | "kitWall" | "kitDoor" | "kitFloor" | "kitStairs" | "kitColumn" | "kitBroken"
+  | "bTower" | "bHouse1" | "bHouse2" | "bShed" | "bShed2";
 
 export interface AssetRegistry {
   character: GLTF | null;
@@ -28,6 +29,12 @@ export interface AssetRegistry {
   kitStairs: GLTF | null;
   kitColumn: GLTF | null;
   kitBroken: GLTF | null;
+  // Complete CC0 building models (solid hide-behind cover).
+  bTower: GLTF | null;
+  bHouse1: GLTF | null;
+  bHouse2: GLTF | null;
+  bShed: GLTF | null;
+  bShed2: GLTF | null;
   textures: { grass: THREE.Texture | null; stone: THREE.Texture | null };
 }
 
@@ -50,6 +57,11 @@ const FILES: Record<GltfKey, string> = {
   kitStairs: "/models/kit_stairs.glb",
   kitColumn: "/models/kit_column.glb",
   kitBroken: "/models/kit_broken.glb",
+  bTower: "/models/building_tower.glb",
+  bHouse1: "/models/building_house1.glb",
+  bHouse2: "/models/building_house2.glb",
+  bShed: "/models/building_shed.glb",
+  bShed2: "/models/building_shed2.glb",
 };
 
 const TEXTURES: Record<"grass" | "stone", string> = {
@@ -86,6 +98,7 @@ export async function loadAssets(onProgress?: (label: string) => void): Promise<
     character: null, gun: null, crate: null, barrel: null, container: null, rock: null, tree: null,
     grass: null, bush: null, fern: null, fence: null, log: null,
     kitWall: null, kitDoor: null, kitFloor: null, kitStairs: null, kitColumn: null, kitBroken: null,
+    bTower: null, bHouse1: null, bHouse2: null, bShed: null, bShed2: null,
     textures: { grass: null, stone: null },
   };
 
