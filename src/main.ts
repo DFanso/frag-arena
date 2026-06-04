@@ -20,6 +20,8 @@ import type {
   PlayerSnap,
   MatchStartMsg,
   MatchOverMsg,
+  LobbyMsg,
+  LobbyPlayer,
 } from "../worker/protocol";
 import { Net } from "./net";
 import { buildArena } from "./map";
@@ -153,6 +155,72 @@ function showLoading(): { update: (loaded: number, total: number, label: string)
   };
 }
 
+// Ready-up lobby overlay: roster + ready states + a Ready toggle. The match starts
+// (server-side) only when every connected player is ready.
+function makeLobby(onReady: (ready: boolean) => void): {
+  show: () => void;
+  hide: () => void;
+  render: (players: LobbyPlayer[], myId: number, matchActive: boolean) => void;
+} {
+  const overlay = document.createElement("div");
+  overlay.style.cssText =
+    "position:fixed;inset:0;z-index:25;display:none;flex-direction:column;align-items:center;" +
+    "justify-content:center;gap:16px;background:#0b1020;color:#dfe;font-family:monospace";
+  const title = document.createElement("div");
+  title.textContent = "LOBBY";
+  title.style.cssText = "font-size:34px;font-weight:bold;letter-spacing:3px";
+  const list = document.createElement("div");
+  list.style.cssText = "min-width:300px;display:flex;flex-direction:column;gap:6px;font-size:16px";
+  const status = document.createElement("div");
+  status.style.cssText = "font-size:13px;opacity:.85;height:18px";
+  const btn = document.createElement("button");
+  btn.style.cssText =
+    "margin-top:8px;padding:12px 30px;font-family:monospace;font-size:18px;font-weight:bold;" +
+    "border:0;border-radius:8px;cursor:pointer;background:#2ecc71;color:#06210f";
+  overlay.appendChild(title);
+  overlay.appendChild(list);
+  overlay.appendChild(status);
+  overlay.appendChild(btn);
+  document.body.appendChild(overlay);
+
+  let myReady = false;
+  let canReady = true;
+  btn.addEventListener("click", () => {
+    if (!canReady) return;
+    myReady = !myReady;
+    onReady(myReady);
+  });
+
+  return {
+    show: () => { overlay.style.display = "flex"; },
+    hide: () => { overlay.style.display = "none"; },
+    render: (players, myId, matchActive) => {
+      list.innerHTML = "";
+      for (const p of players) {
+        const row = document.createElement("div");
+        row.textContent = `${p.name}${p.id === myId ? " (you)" : ""}  —  ${p.ready ? "✓ ready" : "· not ready"}`;
+        row.style.color = p.ready ? "#7CFC9A" : "#cfd6e6";
+        list.appendChild(row);
+      }
+      myReady = players.find((p) => p.id === myId)?.ready ?? false;
+      const readyCount = players.filter((p) => p.ready).length;
+      if (matchActive) {
+        canReady = false;
+        btn.textContent = "Match in progress…";
+        btn.style.background = "#566677";
+        btn.style.cursor = "default";
+        status.textContent = "A match is running — you'll join the next one.";
+      } else {
+        canReady = true;
+        btn.textContent = myReady ? "Cancel ready" : "Ready";
+        btn.style.background = myReady ? "#e67e22" : "#2ecc71";
+        btn.style.cursor = "pointer";
+        status.textContent = `${readyCount}/${players.length} ready — match starts when everyone is ready.`;
+      }
+    },
+  };
+}
+
 // ---- main -------------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -230,6 +298,7 @@ async function main(): Promise<void> {
   let latestSnap: PlayerSnap[] = [];
   let matchEndsAt = 0;     // server epoch ms the match ends (0 = no active match)
   let latestSnapTs = 0;    // server clock from the latest snap (skew-free timer reference)
+  let phase: "lobby" | "match" = "lobby"; // start in the ready-up lobby
 
   function nameOf(id: number): string {
     return latestSnap.find((p) => p.id === id)?.name ?? "";
@@ -248,6 +317,7 @@ async function main(): Promise<void> {
   // ---- networking (name travels in the WS URL query — D5) -------------------
 
   const net = new Net(room, name);
+  const lobby = makeLobby((ready: boolean) => net.send({ t: "ready", ready }));
 
   net.on("welcome", (m: WelcomeMsg) => {
     myId = m.id;
@@ -257,6 +327,14 @@ async function main(): Promise<void> {
     for (const ps of m.players) {
       if (ps.id !== myId) ensureRemote(ps);
     }
+    // New players land in the ready-up lobby (no auto-spawn). The "lobby" message follows.
+    phase = "lobby";
+    lobby.show();
+  });
+
+  net.on("lobby", (m: LobbyMsg) => {
+    lobby.render(m.players, myId, m.matchActive);
+    if (phase === "lobby") lobby.show();
   });
 
   net.on("snap", (m: SnapMsg) => {
@@ -330,6 +408,8 @@ async function main(): Promise<void> {
 
   net.on("matchstart", (m: MatchStartMsg) => {
     matchEndsAt = m.endsAt;
+    phase = "match";
+    lobby.hide();
     hud.hideResults();
     hud.hideDeath();
     deadUntil = 0;
@@ -338,9 +418,12 @@ async function main(): Promise<void> {
   net.on("matchover", (m: MatchOverMsg) => {
     matchEndsAt = 0; // stop the countdown
     deadUntil = 0;
+    phase = "lobby";
     hud.hideDeath();
-    controls.unlock(); // free the cursor so the player can click Play again
-    hud.showResults(m.standings, myId, () => net.send({ t: "playagain" }));
+    controls.unlock(); // free the cursor for the lobby
+    lobby.show();      // the lobby sits behind the results board (server also resent "lobby")
+    // Results board on top; closing it reveals the lobby to ready up for the next match.
+    hud.showResults(m.standings, myId, () => hud.hideResults());
   });
 
   // ---- shooting (single owner: combat.wireShooting — D15) -------------------

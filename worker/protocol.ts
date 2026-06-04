@@ -48,8 +48,8 @@ export const SPAWN_POINTS: readonly Vec3[] = [
 // ---- Client -> Server ----
 export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; }
 export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; }
-export interface PlayAgainMsg { t: "playagain"; }
-export type ClientMsg = InMsg | ShootMsg | PlayAgainMsg;
+export interface ReadyMsg { t: "ready"; ready: boolean; }
+export type ClientMsg = InMsg | ShootMsg | ReadyMsg;
 
 // ---- Server -> Client ----
 export interface PlayerSnap {
@@ -64,7 +64,9 @@ export interface LeaveMsg   { t: "leave";   id: number; }
 export interface Standing { id: number; name: string; frags: number; deaths: number; }
 export interface MatchStartMsg { t: "matchstart"; endsAt: number; fragLimit: number; }
 export interface MatchOverMsg  { t: "matchover";  standings: Standing[]; }
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg;
+export interface LobbyPlayer { id: number; name: string; ready: boolean; }
+export interface LobbyMsg { t: "lobby"; players: LobbyPlayer[]; matchActive: boolean; }
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg;
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }
 export function decode<T>(raw: string): T | null { try { return JSON.parse(raw) as T; } catch { return null; } }

@@ -143,13 +143,14 @@ export class Hud {
       "background:rgba(0,0,0,.4);padding:2px 14px;border-radius:4px;";
     root.appendChild(this.matchTimerEl);
 
-    // End-of-match results overlay (hidden until matchover). Interactive (Play again).
+    // End-of-match results overlay (hidden until matchover). Interactive (Continue).
+    // Body-level (NOT inside the z-index:10 HUD root) so it can sit ABOVE the lobby overlay.
     this.resultsEl = document.createElement("div");
     this.resultsEl.style.cssText =
       "position:fixed;inset:0;display:none;flex-direction:column;align-items:center;" +
-      "justify-content:center;gap:16px;background:rgba(0,0,0,.82);color:#fff;" +
-      "font-family:monospace;pointer-events:auto;z-index:30;";
-    root.appendChild(this.resultsEl);
+      "justify-content:center;gap:16px;background:rgba(0,0,0,.86);color:#fff;" +
+      "font-family:monospace;pointer-events:auto;z-index:45;";
+    parent.appendChild(this.resultsEl);
 
     parent.appendChild(root);
     this.root = root;
@@ -285,7 +286,7 @@ export class Hud {
       rows +
       "</table>" +
       '<button id="play-again-btn" style="font:700 18px monospace;padding:10px 28px;cursor:pointer;' +
-      'background:#3c9;border:none;border-radius:4px;color:#062">Play again</button>';
+      'background:#3c9;border:none;border-radius:4px;color:#062">Continue to lobby</button>';
 
     const btn = this.resultsEl.querySelector("#play-again-btn") as HTMLButtonElement | null;
     if (btn) btn.onclick = onPlayAgain;
@@ -302,6 +303,7 @@ export class Hud {
     window.removeEventListener("keyup", this.onKeyUp);
     if (this.hitMarkerTimer !== undefined) clearTimeout(this.hitMarkerTimer);
     this.root.remove();
+    this.resultsEl.remove();
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {

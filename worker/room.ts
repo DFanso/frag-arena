@@ -41,6 +41,8 @@ import type {
   SpawnMsg,
   MatchStartMsg,
   MatchOverMsg,
+  LobbyMsg,
+  LobbyPlayer,
 } from "./protocol";
 import { validateShoot, chooseSpawn } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
@@ -64,6 +66,8 @@ interface PlayerRec {
   lastSeq: number;
   rate: { windowStart: number; count: number };
   moveBudget?: number; // anti-teleport token bucket (units of travel available)
+  ready: boolean;      // lobby: has this player clicked Ready?
+  inMatch: boolean;    // is this player part of the CURRENT match (vs waiting in the lobby)?
 }
 
 export class GameRoom extends DurableObject<Env> {
@@ -72,8 +76,8 @@ export class GameRoom extends DurableObject<Env> {
   private nextId = 1;
   private tick = 0;
   private tickHandle: ReturnType<typeof setInterval> | undefined;
-  private matchEndsAt = 0; // server epoch ms the current match ends (0 = no match yet)
-  private matchOver = false;
+  private matchEndsAt = 0;     // server epoch ms the current match ends (0 = no active match)
+  private matchActive = false; // a match is currently running (vs lobby / ready-up phase)
 
   async fetch(req: Request): Promise<Response> {
     if (req.headers.get("Upgrade") !== "websocket") {
@@ -109,7 +113,7 @@ export class GameRoom extends DurableObject<Env> {
   private livingEnemyPositions(selfId: number): Vec3[] {
     const out: Vec3[] = [];
     for (const p of this.byId.values()) {
-      if (p.id !== selfId && p.st !== ST_DEAD) out.push(p.p);
+      if (p.id !== selfId && p.inMatch && p.st !== ST_DEAD) out.push(p.p);
     }
     return out;
   }
@@ -147,44 +151,59 @@ export class GameRoom extends DurableObject<Env> {
       protectedUntil: 0,
       lastSeq: 0,
       rate: { windowStart: now, count: 0 },
+      ready: false,
+      inMatch: false,
     };
 
-    // Welcome carries the snapshots of players already in the room.
+    // Welcome carries the snapshots of players already IN THE MATCH (so a late joiner can
+    // pre-build their remotes); lobby-only players aren't game entities yet.
     const existing: PlayerSnap[] = [];
-    for (const other of this.players.values()) existing.push(this.snapOf(other));
+    for (const other of this.players.values()) if (other.inMatch) existing.push(this.snapOf(other));
 
     this.players.set(ws, rec);
     this.byId.set(id, rec);
 
-    // Send welcome FIRST so the client knows its id before any spawn/matchstart broadcast.
-    const startingNewMatch = this.matchOver || this.matchEndsAt === 0;
+    // Welcome first (id + roster). New players ALWAYS land in the lobby — they do not spawn
+    // and no match auto-starts; a match begins only when everyone has readied up.
     const welcome: WelcomeMsg = {
       t: "welcome",
       id,
       tickRate: SERVER_TICK_HZ,
       players: existing,
-      matchEndsAt: startingNewMatch ? Date.now() + MATCH_DURATION_MS : this.matchEndsAt,
+      matchEndsAt: this.matchActive ? this.matchEndsAt : 0,
       fragLimit: FRAG_LIMIT,
     };
     this.send(ws, welcome);
-
-    // Then start a fresh match (first player / after one finished) or spawn into the
-    // ongoing match. startMatch broadcasts the authoritative matchstart + spawns.
-    if (startingNewMatch) {
-      this.startMatch();
-    } else {
-      this.spawn(rec);
-      this.startLoop();
-    }
+    this.broadcastLobby();
+    this.startLoop(); // keep the DO resident (state in memory) while ≥1 player is connected
   }
 
-  // Begin a fresh match: reset scores, respawn everyone, set the timer, broadcast.
+  // Toggle a player's ready state (lobby phase only) and start the match once ALL are ready.
+  private handleReady(rec: PlayerRec, ready: boolean): void {
+    if (this.matchActive) return; // ready only matters between matches
+    rec.ready = ready;
+    this.broadcastLobby();
+    this.maybeStartMatch();
+  }
+
+  // Start the match iff there is ≥1 player and EVERY connected player is ready (no fallback).
+  private maybeStartMatch(): void {
+    if (this.matchActive || this.players.size === 0) return;
+    for (const p of this.players.values()) if (!p.ready) return;
+    this.startMatch();
+  }
+
+  // Begin a fresh match: bring everyone in, reset scores, spawn, set the timer, broadcast.
   private startMatch(): void {
-    this.matchEndsAt = Date.now() + MATCH_DURATION_MS;
-    this.matchOver = false;
+    const now = Date.now();
+    this.matchActive = true;
+    this.matchEndsAt = now + MATCH_DURATION_MS;
     for (const rec of this.players.values()) {
       rec.frags = 0;
       rec.deaths = 0;
+      rec.ready = false;
+      rec.inMatch = true;
+      rec.lastInputAt = now; // fresh idle window — they were in the lobby, not sending input
       this.spawn(rec); // resets hp/pos/protection + broadcasts a SpawnMsg
     }
     const msg: MatchStartMsg = { t: "matchstart", endsAt: this.matchEndsAt, fragLimit: FRAG_LIMIT };
@@ -192,19 +211,27 @@ export class GameRoom extends DurableObject<Env> {
     this.startLoop();
   }
 
-  // End the current match: rank players, broadcast results, and stop ticking (results
-  // are held until a "playagain"; an idle OVER room accrues no free-tier duration).
+  // End the current match: rank the players who played, broadcast results, and drop everyone
+  // back to the lobby (ready=false). The loop keeps running while players remain (so in-memory
+  // state survives between matches); stopLoopIfEmpty handles the empty case.
   private endMatch(): void {
-    this.matchOver = true;
+    this.matchActive = false;
     const standings = rankPlayers(
-      [...this.byId.values()].map((r) => ({ id: r.id, name: r.name, frags: r.frags, deaths: r.deaths })),
+      [...this.byId.values()].filter((r) => r.inMatch).map((r) => ({ id: r.id, name: r.name, frags: r.frags, deaths: r.deaths })),
     );
     const msg: MatchOverMsg = { t: "matchover", standings };
     this.broadcast(msg);
-    if (this.tickHandle !== undefined) {
-      clearInterval(this.tickHandle);
-      this.tickHandle = undefined;
-    }
+    for (const rec of this.players.values()) { rec.inMatch = false; rec.ready = false; }
+    this.matchEndsAt = 0;
+    this.broadcastLobby();
+  }
+
+  // Broadcast the current lobby roster (id/name/ready) + whether a match is running.
+  private broadcastLobby(): void {
+    const players: LobbyPlayer[] = [];
+    for (const rec of this.players.values()) players.push({ id: rec.id, name: rec.name, ready: rec.ready });
+    const msg: LobbyMsg = { t: "lobby", players, matchActive: this.matchActive };
+    this.broadcast(msg);
   }
 
   private removePlayer(ws: WebSocket): void {
@@ -219,7 +246,9 @@ export class GameRoom extends DurableObject<Env> {
     }
     const leave: LeaveMsg = { t: "leave", id: rec.id };
     this.broadcast(leave);
+    this.broadcastLobby();          // roster changed
     this.stopLoopIfEmpty();
+    if (!this.matchActive) this.maybeStartMatch(); // a leave may leave only ready players
   }
 
   webSocketClose(ws: WebSocket): void {
@@ -257,15 +286,15 @@ export class GameRoom extends DurableObject<Env> {
     const msg = decode<ClientMsg>(text);
     if (!msg) return;
     if (msg.t === "in") {
-      this.ingestInput(rec, msg);
+      if (rec.inMatch) this.ingestInput(rec, msg); // lobby players send no input
       return;
     }
     if (msg.t === "shoot") {
-      this.handleShoot(rec, msg);
+      this.handleShoot(rec, msg); // guards on matchActive + inMatch
       return;
     }
-    if (msg.t === "playagain") {
-      if (this.matchOver) this.startMatch(); // only restarts when a match has ended
+    if (msg.t === "ready") {
+      this.handleReady(rec, !!msg.ready);
       return;
     }
   }
@@ -299,9 +328,11 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private handleShoot(rec: PlayerRec, m: ShootMsg): void {
+    if (!rec.inMatch) return; // no combat in the lobby (inMatch ⇒ a match is active)
     const now = Date.now();
     const weapon = WEAPONS[m.w] ?? WEAPONS[0]!;
-    const target = m.hit === null ? null : (this.byId.get(m.hit) ?? null);
+    const rawTarget = m.hit === null ? null : (this.byId.get(m.hit) ?? null);
+    const target = rawTarget && rawTarget.inMatch ? rawTarget : null; // only in-match players are valid targets
 
     // Firing while spawn-protected drops the protection immediately so that
     // validateShoot (which only accepts ST_ALIVE shooters) sees the right state.
@@ -379,8 +410,9 @@ export class GameRoom extends DurableObject<Env> {
   private loopTick(): void {
     const now = Date.now();
 
-    // 1) Advance respawn / spawn-protection timers (T7).
+    // 1) Advance respawn / spawn-protection timers for IN-MATCH players.
     for (const rec of this.players.values()) {
+      if (!rec.inMatch) continue;
       if (rec.st === ST_DEAD && rec.respawnAt !== 0 && now >= rec.respawnAt) {
         this.spawn(rec);
       } else if (rec.st === ST_PROTECTED && now > rec.protectedUntil) {
@@ -388,30 +420,37 @@ export class GameRoom extends DurableObject<Env> {
       }
     }
 
-    // 2) Drop idle players via removePlayer (broadcasts LeaveMsg + stopLoopIfEmpty).
-    //    Iterate a SNAPSHOT so removePlayer can mutate the maps during iteration.
+    // 2) Drop IN-MATCH players who stopped sending input (AFK). Lobby players send no input,
+    //    so they are never idle-dropped. Iterate a SNAPSHOT (removePlayer mutates the maps).
     for (const rec of [...this.players.values()]) {
-      if (now - rec.lastInputAt > IDLE_TIMEOUT_MS) {
+      if (rec.inMatch && now - rec.lastInputAt > IDLE_TIMEOUT_MS) {
         this.removePlayer(rec.ws);
       }
     }
     if (this.players.size === 0) return;
 
+    // Lobby phase: the loop just keeps the DO resident (state in memory). No snaps.
+    if (!this.matchActive) return;
+
+    // If everyone in the match has left, end it so lobby players can start a new one.
+    let anyInMatch = false;
+    for (const rec of this.players.values()) if (rec.inMatch) { anyInMatch = true; break; }
+    if (!anyInMatch) { this.endMatch(); return; }
+
     // 2.5) Match end check (time expired or someone reached the frag limit).
-    if (!this.matchOver && this.matchEndsAt !== 0) {
-      let maxFrags = 0;
-      for (const rec of this.players.values()) if (rec.frags > maxFrags) maxFrags = rec.frags;
-      if (matchOutcome(now, this.matchEndsAt, maxFrags, FRAG_LIMIT)) {
-        this.endMatch();
-        return;
-      }
+    let maxFrags = 0;
+    for (const rec of this.players.values()) if (rec.inMatch && rec.frags > maxFrags) maxFrags = rec.frags;
+    if (matchOutcome(now, this.matchEndsAt, maxFrags, FRAG_LIMIT)) {
+      this.endMatch();
+      return;
     }
 
-    // 3) Build + broadcast a SnapMsg.
+    // 3) Build + broadcast a SnapMsg of the IN-MATCH players only.
     this.tick++;
     const ack: Record<number, number> = {};
     const snaps: PlayerSnap[] = [];
     for (const rec of this.players.values()) {
+      if (!rec.inMatch) continue;
       ack[rec.id] = rec.lastSeq;
       snaps.push(this.snapOf(rec));
     }

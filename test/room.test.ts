@@ -20,7 +20,6 @@ import {
   MAX_MESSAGE_BYTES,
   RATE_LIMIT_MSGS_PER_SEC,
   FRAG_LIMIT,
-  MATCH_DURATION_MS,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -34,6 +33,7 @@ import type {
   SnapMsg,
   MatchOverMsg,
   MatchStartMsg,
+  LobbyMsg,
 } from "../worker/protocol";
 
 // Get a stub for a room by name.
@@ -80,23 +80,27 @@ function nextMessage<T extends ServerMsg>(
 }
 
 describe("GameRoom join/leave/cap", () => {
-  it("assigns an id and sends a welcome listing existing players", async () => {
+  it("assigns an id, lands in the lobby, and the lobby roster lists existing players", async () => {
     const stub = roomStub("t3-welcome");
     const a = await connect(stub, "alice");
     const welcomeA = await nextMessage<WelcomeMsg>(a, ["welcome"]);
     expect(welcomeA.t).toBe("welcome");
     expect(typeof welcomeA.id).toBe("number");
     expect(welcomeA.tickRate).toBe(SERVER_TICK_HZ);
-    // First player: no other players present yet.
+    // No match yet (lobby): welcome lists no in-match players and no active timer.
     expect(welcomeA.players.length).toBe(0);
+    expect(welcomeA.matchEndsAt).toBe(0);
 
     const b = await connect(stub, "bob");
     const welcomeB = await nextMessage<WelcomeMsg>(b, ["welcome"]);
-    // Second player's welcome must include the first player, with the real nickname.
     expect(welcomeB.id).not.toBe(welcomeA.id);
-    const seenA = welcomeB.players.find((p) => p.id === welcomeA.id);
+    // The lobby roster (not welcome.players) carries connected players + their ready state.
+    const lobbyB = await nextMessage<LobbyMsg>(b, ["lobby"]);
+    expect(lobbyB.matchActive).toBe(false);
+    const seenA = lobbyB.players.find((p) => p.id === welcomeA.id);
     expect(seenA).toBeTruthy();
     expect(seenA!.name).toBe("alice");
+    expect(seenA!.ready).toBe(false);
 
     a.close();
     b.close();
@@ -168,6 +172,8 @@ function makeRecIngest(now: number, p: Vec3 = [0, 1, 0]) {
     protectedUntil: 0,
     lastSeq: 0,
     rate: { windowStart: now, count: 0 },
+    ready: false,
+    inMatch: true,
   };
 }
 
@@ -249,6 +255,9 @@ describe("GameRoom loopTick / idle / stop-on-empty", () => {
     const b = await connect(stub, "bob");
     const welcomeB = await nextMessage<WelcomeMsg>(b, ["welcome"]);
 
+    // Put both players into a live match (they spawn ST_PROTECTED + become snap entities).
+    await runInDurableObject(stub, (instance) => (instance as any).startMatch());
+
     // Send one input from each so their lastSeq values differ.
     const inA: InMsg = { t: "in", seq: 1290, ts: 1, p: [1, 1, 0], r: [0, 0], v: [0, 0, 0] };
     const inB: InMsg = { t: "in", seq: 44, ts: 1, p: [2, 1, 0], r: [0, 0], v: [0, 0, 0] };
@@ -291,6 +300,9 @@ describe("GameRoom loopTick / idle / stop-on-empty", () => {
     const welcomeA = await nextMessage<WelcomeMsg>(a, ["welcome"]);
     const b = await connect(stub, "idle");
     const welcomeB = await nextMessage<WelcomeMsg>(b, ["welcome"]);
+
+    // Idle-drop only applies to in-match players, so start a match first.
+    await runInDurableObject(stub, (instance) => (instance as any).startMatch());
 
     // Force b's lastInputAt far into the past so the next tick drops it as idle.
     await runInDurableObject(stub, (instance) => {
@@ -357,6 +369,7 @@ function makeRec(
     lastShotAt: number;
     protectedUntil: number;
     lastInputAt: number;
+    inMatch: boolean;
   }> = {},
 ) {
   const ws = {} as unknown as WebSocket;
@@ -377,6 +390,8 @@ function makeRec(
     protectedUntil: opts.protectedUntil ?? 0,
     lastSeq: 0,
     rate: { windowStart: Date.now(), count: 0 },
+    ready: false,
+    inMatch: opts.inMatch ?? true, // most direct-method tests exercise in-match behavior
   };
 }
 
@@ -389,6 +404,7 @@ type RoomInternals = {
   loopTick: () => void;
   ingestInput: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
   webSocketMessage: (ws: WebSocket, raw: string | ArrayBuffer) => void;
+  matchActive: boolean;
 };
 
 describe("GameRoom.handleShoot", () => {
@@ -812,30 +828,78 @@ describe("GameRoom webSocketMessage guards", () => {
 });
 
 describe("GameRoom match lifecycle", () => {
-  it("starts a match on first join and welcome carries the timer + frag limit", async () => {
+  it("a fresh join lands in the lobby — no auto-start", async () => {
     const stub = roomStub("match-welcome");
     const a = await connect(stub, "alice");
     const w = await nextMessage<WelcomeMsg>(a, ["welcome"]);
     expect(w.fragLimit).toBe(FRAG_LIMIT);
-    expect(w.matchEndsAt).toBeGreaterThan(Date.now());
-    expect(w.matchEndsAt).toBeLessThanOrEqual(Date.now() + MATCH_DURATION_MS + 2000);
+    expect(w.matchEndsAt).toBe(0); // lobby: no active match
+    await runInDurableObject(stub, (instance) => {
+      expect((instance as any).matchActive).toBe(false);
+    });
     a.close();
   });
 
-  it("ends the match at the frag limit and broadcasts sorted standings", async () => {
+  it("starts the match once every player is ready (solo: readying starts it)", async () => {
+    const stub = roomStub("match-ready-solo");
+    const a = await connect(stub, "alice");
+    const wa = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    const startP = nextMessage<MatchStartMsg>(a, ["matchstart"]);
+    a.send(JSON.stringify({ t: "ready", ready: true }));
+    const start = await startP;
+    expect(start.fragLimit).toBe(FRAG_LIMIT);
+    expect(start.endsAt).toBeGreaterThan(Date.now());
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      expect(i.matchActive).toBe(true);
+      expect(i.byId.get(wa.id).inMatch).toBe(true);
+    });
+    a.close();
+  });
+
+  it("does NOT start until ALL players are ready", async () => {
+    const stub = roomStub("match-ready-all");
+    const a = await connect(stub, "alice");
+    await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    const b = await connect(stub, "bob");
+    await nextMessage<WelcomeMsg>(b, ["welcome"]);
+
+    // Only a readies → still in the lobby.
+    a.send(JSON.stringify({ t: "ready", ready: true }));
+    await nextMessage<LobbyMsg>(b, ["lobby"]); // a's ready propagated
+    await runInDurableObject(stub, (instance) => {
+      expect((instance as any).matchActive).toBe(false);
+    });
+
+    // b readies too → the match starts.
+    const startP = nextMessage<MatchStartMsg>(a, ["matchstart"]);
+    b.send(JSON.stringify({ t: "ready", ready: true }));
+    await startP;
+    await runInDurableObject(stub, (instance) => {
+      expect((instance as any).matchActive).toBe(true);
+    });
+
+    a.close();
+    b.close();
+  });
+
+  it("ends the match at the frag limit, broadcasts sorted standings, and keeps the loop alive", async () => {
     const stub = roomStub("match-fraglimit");
     const a = await connect(stub, "alice");
     const wa = await nextMessage<WelcomeMsg>(a, ["welcome"]);
     const b = await connect(stub, "bob");
     await nextMessage<WelcomeMsg>(b, ["welcome"]);
 
+    await runInDurableObject(stub, (instance) => (instance as any).startMatch());
+
     const overP = nextMessage<MatchOverMsg>(a, ["matchover"]);
     await runInDurableObject(stub, (instance) => {
       const i = instance as any;
       i.byId.get(wa.id).frags = FRAG_LIMIT; // top fragger; timer is still far away
       i.loopTick();
-      expect(i.matchOver).toBe(true);
-      expect(i.tickHandle).toBeUndefined(); // ticking stops when the match ends
+      expect(i.matchActive).toBe(false);       // back to the lobby
+      expect(i.tickHandle).not.toBeUndefined(); // loop persists while players remain
+      expect(i.byId.get(wa.id).inMatch).toBe(false);
     });
     const over = await overP;
     expect(over.standings.length).toBe(2);
@@ -845,29 +909,30 @@ describe("GameRoom match lifecycle", () => {
     b.close();
   });
 
-  it("playagain after a match resets scores and broadcasts a matchstart", async () => {
-    const stub = roomStub("match-playagain");
+  it("readying up after a match starts a fresh match with reset scores", async () => {
+    const stub = roomStub("match-rematch");
     const a = await connect(stub, "alice");
     const wa = await nextMessage<WelcomeMsg>(a, ["welcome"]);
 
-    const overP = nextMessage<MatchOverMsg>(a, ["matchover"]); // listen BEFORE ending
+    await runInDurableObject(stub, (instance) => (instance as any).startMatch());
+    const overP = nextMessage<MatchOverMsg>(a, ["matchover"]);
     await runInDurableObject(stub, (instance) => {
       const i = instance as any;
       i.byId.get(wa.id).frags = FRAG_LIMIT;
       i.loopTick();
-      expect(i.matchOver).toBe(true);
+      expect(i.matchActive).toBe(false);
     });
     await overP;
 
+    // Back in the lobby — readying up starts a new match with scores reset.
     const startP = nextMessage<MatchStartMsg>(a, ["matchstart"]);
-    a.send(JSON.stringify({ t: "playagain" }));
+    a.send(JSON.stringify({ t: "ready", ready: true }));
     const start = await startP;
-    expect(start.fragLimit).toBe(FRAG_LIMIT);
     expect(start.endsAt).toBeGreaterThan(Date.now());
     await runInDurableObject(stub, (instance) => {
       const i = instance as any;
-      expect(i.matchOver).toBe(false);
-      expect(i.byId.get(wa.id).frags).toBe(0); // scores reset for the new match
+      expect(i.matchActive).toBe(true);
+      expect(i.byId.get(wa.id).frags).toBe(0);
     });
 
     a.close();
