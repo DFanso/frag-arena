@@ -92,6 +92,12 @@ export class RemotePlayer {
 
     if (character) {
       const model = cloneSkeleton(character.scene);
+      // The Quaternius soldier bundles a full weapon set as separate meshes — drop them so
+      // the remote player is a clean helmeted soldier (also keeps the bounding box correct).
+      const weaponRe = /^(revolver|sniper|pistol|smg|grenadelauncher|shortcannon|shotgun|rocketlauncher|ak|shovel|knife)/i;
+      const drop: THREE.Object3D[] = [];
+      model.traverse((o) => { if ((o as THREE.Mesh).isMesh && weaponRe.test(o.name)) drop.push(o); });
+      for (const o of drop) o.removeFromParent();
       // Scale to a consistent player height regardless of the model's native units,
       // then anchor its feet at the group origin (y=0).
       model.updateMatrixWorld(true);
