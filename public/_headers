@@ -1,0 +1,16 @@
+# Cloudflare static-asset cache rules (served by the Workers Assets binding).
+# Hashed JS/CSS never change content -> cache forever, immutable.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# 3D models + textures have stable names; cache for a week (ETag still revalidates).
+/models/*
+  Cache-Control: public, max-age=604800
+/textures/*
+  Cache-Control: public, max-age=604800
+
+# HTML must revalidate so new deploys show up immediately.
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache

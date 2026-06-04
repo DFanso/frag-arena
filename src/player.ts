@@ -11,7 +11,11 @@ import { healthFraction, healthColor } from "./health-ui";
 import { playerColor } from "./colors";
 
 // Snap the local player to the server position only when divergence exceeds this (world units).
-export const RECONCILE_DIST = 2.0;
+// Movement is client-authoritative (model A): the client predicts locally and the server just
+// echoes its (anti-cheat-clamped) position, so during normal play the snapshot trails the
+// client by ~speed*latency. This threshold must absorb that or the player rubber-bands while
+// moving; it exists only to correct gross desync, not to fight latency.
+export const RECONCILE_DIST = 8.0;
 
 // Owns the input seq counter and the reconciliation decision for the net layer.
 export class LocalPlayer {

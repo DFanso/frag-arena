@@ -19,6 +19,7 @@ export const AIM_CONE_DOT = Math.cos((4 * Math.PI) / 180); // ~4 degrees (legacy
 export const HIT_RADIUS = 1.2;                            // accept a shot whose aim ray passes within this of the target body
 export const MAX_MOVE_SPEED = 12;                         // units/sec
 export const MOVE_SPEED_TOLERANCE = 1.6;                  // allow bursts (jump pads etc.)
+export const MOVE_BUDGET_SEC = 0.2;                       // anti-teleport token-bucket burst (sec of travel absorbed before clamping; tolerates network jitter)
 export const MATCH_DURATION_MS = 300_000;                 // 5-minute matches
 export const FRAG_LIMIT = 25;                             // match also ends at this many frags
 

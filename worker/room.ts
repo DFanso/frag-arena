@@ -17,6 +17,9 @@ import {
   RATE_LIMIT_MSGS_PER_SEC,
   MATCH_DURATION_MS,
   FRAG_LIMIT,
+  MAX_MOVE_SPEED,
+  MOVE_SPEED_TOLERANCE,
+  MOVE_BUDGET_SEC,
   decode,
   encode,
   sanitizeName,
@@ -39,7 +42,7 @@ import type {
   MatchStartMsg,
   MatchOverMsg,
 } from "./protocol";
-import { clampMove, validateShoot, chooseSpawn } from "./validate";
+import { validateShoot, chooseSpawn } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
 import type { Env } from "./index";
 
@@ -60,6 +63,7 @@ interface PlayerRec {
   protectedUntil: number;
   lastSeq: number;
   rate: { windowStart: number; count: number };
+  moveBudget?: number; // anti-teleport token bucket (units of travel available)
 }
 
 export class GameRoom extends DurableObject<Env> {
@@ -268,11 +272,26 @@ export class GameRoom extends DurableObject<Env> {
 
   private ingestInput(rec: PlayerRec, m: InMsg): void {
     const now = Date.now();
-    // Anti-teleport uses TRUSTED server dt (not the client-controlled m.ts).
-    const dtMs = rec.lastInputAt
-      ? Math.min(Math.max(now - rec.lastInputAt, 1), 250)
-      : 50;
-    rec.p = clampMove(rec.p, m.p, dtMs);
+    // Anti-teleport via a token bucket replenished on TRUSTED server time (NOT the
+    // client-controlled m.ts). The bucket accumulates a small burst so that packets
+    // bunched by network jitter aren't over-clamped (which would make the server position
+    // lag and the client rubber-band), while a sustained teleport is still capped.
+    const rate = MAX_MOVE_SPEED * MOVE_SPEED_TOLERANCE; // units/sec
+    const cap = rate * MOVE_BUDGET_SEC;                 // max burst (units)
+    const refillSec = Math.min(Math.max(now - rec.lastInputAt, 0), 1000) / 1000;
+    let budget = Math.min(cap, (rec.moveBudget ?? cap) + rate * refillSec);
+
+    const dx = m.p[0] - rec.p[0], dy = m.p[1] - rec.p[1], dz = m.p[2] - rec.p[2];
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist === 0 || dist <= budget) {
+      rec.p = [m.p[0], m.p[1], m.p[2]];
+      budget -= dist;
+    } else {
+      const s = budget / dist; // snap toward the claim, up to the available budget
+      rec.p = [rec.p[0] + dx * s, rec.p[1] + dy * s, rec.p[2] + dz * s];
+      budget = 0;
+    }
+    rec.moveBudget = budget;
     rec.r = [m.r[0], m.r[1]];
     rec.v = [m.v[0], m.v[1], m.v[2]];
     rec.lastInputAt = now;
