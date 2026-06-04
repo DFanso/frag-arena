@@ -8,6 +8,7 @@ import { INTERP_DELAY_MS, EYE_HEIGHT, MAX_HP, type Vec3, type Rot, type InMsg } 
 import { sampleBuffer, type Snapshot } from "./interp";
 import { pickAnim } from "./anim";
 import { healthFraction, healthColor } from "./health-ui";
+import { playerColor } from "./colors";
 
 // Snap the local player to the server position only when divergence exceeds this (world units).
 export const RECONCILE_DIST = 2.0;
@@ -68,6 +69,7 @@ export class RemotePlayer {
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Record<string, THREE.AnimationAction> = {};
   private current: THREE.AnimationAction | null = null;
+  private modelMats: THREE.Material[] = []; // per-instance cloned materials (for disposal)
 
   constructor(id: number, name: string, character: GLTF | null) {
     this.id = id;
@@ -95,8 +97,24 @@ export class RemotePlayer {
       model.updateMatrixWorld(true);
       const fitted = new THREE.Box3().setFromObject(model);
       model.position.y = -fitted.min.y; // lift so the lowest point (feet) sits at y=0
+      // Tint this player's body a deterministic per-id color. Materials are SHARED across
+      // SkeletonUtils clones, so clone them per-instance before recoloring.
+      const tint = playerColor(id);
+      const applyTint = (m: THREE.Material): THREE.Material => {
+        const cloned = m.clone();
+        const sm = cloned as THREE.MeshStandardMaterial;
+        if (sm.color) sm.color.setHex(tint);
+        this.modelMats.push(cloned);
+        return cloned;
+      };
       model.traverse((o) => {
-        if ((o as THREE.Mesh).isMesh) { o.castShadow = true; o.receiveShadow = true; }
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.material = Array.isArray(mesh.material)
+          ? mesh.material.map(applyTint)
+          : applyTint(mesh.material);
       });
       this.group.add(model);
       this.mixer = new THREE.AnimationMixer(model);
@@ -106,10 +124,10 @@ export class RemotePlayer {
       this.current = this.actions["Idle"] ?? null;
       this.current?.play();
     } else {
-      // Fallback: a colored box sized like the proxy/player.
+      // Fallback: a box tinted with this player's color.
       const box = new THREE.Mesh(
         new THREE.BoxGeometry(0.8, PLAYER_HEIGHT, 0.6),
-        new THREE.MeshStandardMaterial({ color: 0xff5544 }),
+        new THREE.MeshStandardMaterial({ color: playerColor(id) }),
       );
       box.position.y = PLAYER_HEIGHT / 2;
       box.castShadow = true;
@@ -219,6 +237,7 @@ export class RemotePlayer {
     this.nameplate.material.dispose();
     this.healthTex.dispose();
     this.healthBar.material.dispose();
+    for (const m of this.modelMats) m.dispose(); // per-instance cloned tints
     (this.body.material as THREE.Material).dispose();
     this.body.geometry.dispose();
   }
