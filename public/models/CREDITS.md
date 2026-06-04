@@ -12,6 +12,22 @@ Credit is given here voluntarily because these creators are great.
 | `container.glb` | Cargo Train Coal Container | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/2gW0zqI9IY |
 | `rock.glb` | Rock | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/RtLRqYjfMs |
 | `tree.glb` | Tree | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/aVOxaHRPWe |
+| `grass.glb` | Grass | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/GyDYqHAByU |
+| `bush.glb` | Bush | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/ooG6CkLyE8 |
+| `fern.glb` | Fern | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/jqcanvH7D6 |
+| `fence.glb` | Fence | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/e02PFKKhbr |
+| `log.glb` | Wood Log | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/L4E32Wee6C |
+
+## Textures
+
+Tileable PBR textures below are **CC0 1.0 (Public Domain)** from ambientCG
+(https://ambientcg.com — every asset on the site is licensed CC0 1.0). Only the
+Color/Albedo map of each set is used here.
+
+| File | Texture | Creator | License | Source |
+|------|---------|---------|---------|--------|
+| `../textures/grass.jpg` | Grass 001 (1K Color map) | ambientCG | CC0 1.0 | https://ambientcg.com/view?id=Grass001 |
+| `../textures/stone.jpg` | Rock 023 (1K Color map) | ambientCG | CC0 1.0 | https://ambientcg.com/view?id=Rock023 |
 
 `character.glb` animation clips: Dance, Death, Idle, Jump, No, Punch, Running, Sitting,
 Standing, ThumbsUp, Walking, WalkJump, Wave, Yes.
