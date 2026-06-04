@@ -2,8 +2,10 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cf-fps",
   "main": "worker/index.ts",
+  "account_id": "6c16db9e8f291e6054adfaed27878390",
   "compatibility_date": "2026-01-01",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [{ "pattern": "fps.dfanso.dev", "custom_domain": true }],
   "assets": {
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/ws/*"]
