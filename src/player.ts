@@ -146,7 +146,8 @@ export class RemotePlayer {
     this.healthCtx = this.healthCanvas.getContext("2d")!;
     this.healthTex = new THREE.CanvasTexture(this.healthCanvas);
     this.healthBar = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: this.healthTex, depthTest: false }),
+      // depthTest:true so the bar is hidden when the enemy is behind cover.
+      new THREE.SpriteMaterial({ map: this.healthTex, depthTest: true }),
     );
     this.healthBar.scale.set(1.0, 0.13, 1);
     this.healthBar.position.y = 1.98;
@@ -253,7 +254,8 @@ export class RemotePlayer {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(name, canvas.width / 2, canvas.height / 2);
     const tex = new THREE.CanvasTexture(canvas);
-    const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+    // depthTest:true so the nameplate is occluded when the enemy is behind cover.
+    const mat = new THREE.SpriteMaterial({ map: tex, depthTest: true });
     const sprite = new THREE.Sprite(mat);
     sprite.scale.set(1.5, 0.375, 1);
     return sprite;
