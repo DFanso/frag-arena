@@ -18,6 +18,8 @@ import type {
   SpawnMsg,
   LeaveMsg,
   PlayerSnap,
+  MatchStartMsg,
+  MatchOverMsg,
 } from "../worker/protocol";
 import { Net } from "./net";
 import { buildArena } from "./map";
@@ -32,48 +34,97 @@ import { Viewmodel } from "./viewmodel";
 
 // ---- nickname entry screen --------------------------------------------------
 
-function showNicknameScreen(): Promise<string> {
+function randomRoomCode(): string {
+  return Math.random().toString(36).slice(2, 7);
+}
+
+function showStartScreen(): Promise<{ name: string; room: string }> {
   return new Promise((resolve) => {
+    const initialRoom = sanitizeRoom(new URLSearchParams(location.search).get("room") ?? undefined);
     const overlay = document.createElement("div");
     overlay.style.cssText =
       "position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;" +
-      "justify-content:center;gap:14px;background:#111;color:#fff;font-family:monospace;z-index:100;";
+      "justify-content:center;gap:12px;background:#111;color:#fff;font-family:monospace;z-index:100;";
     overlay.innerHTML =
       '<h1 style="margin:0">CF-FPS</h1>' +
-      '<p style="opacity:.7;margin:0">Enter a nickname and press Play.</p>';
-    const input = document.createElement("input");
-    input.maxLength = 16;
-    input.placeholder = "nickname";
-    input.value = localStorage.getItem("cf-fps-name") ?? "";
-    input.style.cssText = "font:16px monospace;padding:8px 10px;width:220px;text-align:center;";
-    const btn = document.createElement("button");
-    btn.textContent = "Play";
-    btn.style.cssText = "font:16px monospace;padding:8px 22px;cursor:pointer;";
-    overlay.appendChild(input);
-    overlay.appendChild(btn);
+      '<p style="opacity:.7;margin:0;max-width:360px;text-align:center">' +
+      "Pick a name. Leave the room blank for Quick Play, or enter / create a code for a private room.</p>";
+
+    const inputCss = "font:16px monospace;padding:8px 10px;width:240px;text-align:center;";
+    const nameInput = document.createElement("input");
+    nameInput.maxLength = 16;
+    nameInput.placeholder = "nickname";
+    nameInput.value = localStorage.getItem("cf-fps-name") ?? "";
+    nameInput.style.cssText = inputCss;
+
+    const roomInput = document.createElement("input");
+    roomInput.maxLength = 24;
+    roomInput.placeholder = "room code (blank = public)";
+    roomInput.value = initialRoom === "public" ? "" : initialRoom;
+    roomInput.style.cssText = inputCss;
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:280px;";
+    const btnCss = "font:14px monospace;padding:8px 14px;cursor:pointer;";
+    const createBtn = document.createElement("button");
+    createBtn.textContent = "Create random room";
+    createBtn.style.cssText = btnCss;
+    const copyBtn = document.createElement("button");
+    copyBtn.textContent = "Copy invite link";
+    copyBtn.style.cssText = btnCss;
+    const playBtn = document.createElement("button");
+    playBtn.textContent = "Play";
+    playBtn.style.cssText = "font:16px monospace;padding:8px 28px;cursor:pointer;background:#3c9;border:none;color:#062;";
+    btnRow.appendChild(createBtn);
+    btnRow.appendChild(copyBtn);
+    btnRow.appendChild(playBtn);
+
+    const note = document.createElement("div");
+    note.style.cssText = "font-size:13px;opacity:.7;height:16px";
+
+    overlay.appendChild(nameInput);
+    overlay.appendChild(roomInput);
+    overlay.appendChild(btnRow);
+    overlay.appendChild(note);
     document.body.appendChild(overlay);
-    input.focus();
+    nameInput.focus();
+
+    const linkFor = (): string => {
+      const r = sanitizeRoom(roomInput.value || undefined);
+      return `${location.origin}/?room=${r}`;
+    };
+    createBtn.addEventListener("click", () => {
+      roomInput.value = randomRoomCode();
+      note.textContent = `Room ${roomInput.value} — share the invite link!`;
+    });
+    copyBtn.addEventListener("click", () => {
+      const link = linkFor();
+      void navigator.clipboard?.writeText(link);
+      note.textContent = `Copied: ${link}`;
+    });
 
     const submit = (): void => {
-      const name = sanitizeName(input.value);
+      const name = sanitizeName(nameInput.value);
+      const room = sanitizeRoom(roomInput.value || undefined);
       localStorage.setItem("cf-fps-name", name);
+      // Reflect the room in the URL so a refresh / shared link keeps it.
+      history.replaceState(null, "", room === "public" ? location.pathname : `?room=${room}`);
       overlay.remove();
-      resolve(name);
+      resolve({ name, room });
     };
-    btn.addEventListener("click", submit);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") submit();
-    });
+    playBtn.addEventListener("click", submit);
+    for (const el of [nameInput, roomInput]) {
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") submit();
+      });
+    }
   });
 }
 
 // ---- main -------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const name = await showNicknameScreen();
-
-  const params = new URLSearchParams(location.search);
-  const room = sanitizeRoom(params.get("room") ?? undefined);
+  const { name, room } = await showStartScreen();
 
   // Renderer + canvas (#game from index.html).
   const canvas = document.getElementById("game") as HTMLCanvasElement;
@@ -143,6 +194,8 @@ async function main(): Promise<void> {
   const remotes = new Map<number, RemotePlayer>();
   let myId = -1;
   let latestSnap: PlayerSnap[] = [];
+  let matchEndsAt = 0;     // server epoch ms the match ends (0 = no active match)
+  let latestSnapTs = 0;    // server clock from the latest snap (skew-free timer reference)
 
   function nameOf(id: number): string {
     return latestSnap.find((p) => p.id === id)?.name ?? "";
@@ -166,6 +219,7 @@ async function main(): Promise<void> {
     myId = m.id;
     local = new LocalPlayer(myId);
     hud.setMyId(myId);
+    matchEndsAt = m.matchEndsAt;
     for (const ps of m.players) {
       if (ps.id !== myId) ensureRemote(ps);
     }
@@ -173,6 +227,7 @@ async function main(): Promise<void> {
 
   net.on("snap", (m: SnapMsg) => {
     latestSnap = m.players;
+    latestSnapTs = m.ts;
     hud.setPlayers(m.players);
     for (const ps of m.players) {
       if (ps.id === myId) {
@@ -237,6 +292,21 @@ async function main(): Promise<void> {
       rp.dispose();
       remotes.delete(m.id);
     }
+  });
+
+  net.on("matchstart", (m: MatchStartMsg) => {
+    matchEndsAt = m.endsAt;
+    hud.hideResults();
+    hud.hideDeath();
+    deadUntil = 0;
+  });
+
+  net.on("matchover", (m: MatchOverMsg) => {
+    matchEndsAt = 0; // stop the countdown
+    deadUntil = 0;
+    hud.hideDeath();
+    controls.unlock(); // free the cursor so the player can click Play again
+    hud.showResults(m.standings, myId, () => net.send({ t: "playagain" }));
   });
 
   // ---- shooting (single owner: combat.wireShooting — D15) -------------------
@@ -311,6 +381,9 @@ async function main(): Promise<void> {
       hud.updateDeath(rem);
       if (rem <= 0) deadUntil = 0;
     }
+
+    // Match timer (skew-free: server endsAt minus the latest server snapshot time).
+    hud.setMatchTime(matchEndsAt > 0 && latestSnapTs > 0 ? matchEndsAt - latestSnapTs : null);
 
     // HUD upkeep (prune expired kill-feed lines).
     hud.renderKillFeed();

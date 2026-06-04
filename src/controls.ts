@@ -76,6 +76,7 @@ export class FpsControls {
   }
 
   lock(): void { this.controls.lock(); }
+  unlock(): void { this.controls.unlock(); }
   get isLocked(): boolean { return this.controls.isLocked; }
 
   // Subscribe to PointerLock lock/unlock transitions (true = locked).

@@ -1,7 +1,9 @@
 // src/hud.ts — HUD overlay: crosshair, health bar, prompt, scoreboard, kill feed, hit marker.
 import { MAX_HP } from "../worker/protocol";
-import type { PlayerSnap, KillMsg } from "../worker/protocol";
+import type { PlayerSnap, KillMsg, Standing } from "../worker/protocol";
 import { countdownText, deathMessage } from "./death-ui";
+import { formatClock } from "./match-ui";
+import { playerColor } from "./colors";
 
 export const KILL_FEED_TTL_MS = 5000;
 
@@ -46,6 +48,8 @@ export class Hud {
   private deathEl!: HTMLDivElement;
   private deathTitle!: HTMLDivElement;
   private deathCount!: HTMLDivElement;
+  private matchTimerEl!: HTMLDivElement;
+  private resultsEl!: HTMLDivElement;
 
   constructor(parent: HTMLElement = document.body) {
     const root = document.createElement("div");
@@ -130,6 +134,22 @@ export class Hud {
     this.deathEl.appendChild(this.deathTitle);
     this.deathEl.appendChild(this.deathCount);
     root.appendChild(this.deathEl);
+
+    // Match timer (top-center). Hidden until a match time is set.
+    this.matchTimerEl = document.createElement("div");
+    this.matchTimerEl.style.cssText =
+      "position:absolute;left:50%;top:12px;transform:translateX(-50%);display:none;" +
+      "color:#fff;font:700 26px monospace;text-shadow:0 2px 4px #000;" +
+      "background:rgba(0,0,0,.4);padding:2px 14px;border-radius:4px;";
+    root.appendChild(this.matchTimerEl);
+
+    // End-of-match results overlay (hidden until matchover). Interactive (Play again).
+    this.resultsEl = document.createElement("div");
+    this.resultsEl.style.cssText =
+      "position:fixed;inset:0;display:none;flex-direction:column;align-items:center;" +
+      "justify-content:center;gap:16px;background:rgba(0,0,0,.82);color:#fff;" +
+      "font-family:monospace;pointer-events:auto;z-index:30;";
+    root.appendChild(this.resultsEl);
 
     parent.appendChild(root);
     this.root = root;
@@ -220,6 +240,60 @@ export class Hud {
   }
   hideDeath(): void {
     this.deathEl.style.display = "none";
+  }
+
+  /** Update the match timer (MM:SS). Pass null to hide it (no active match). */
+  setMatchTime(remainingMs: number | null): void {
+    if (remainingMs === null) {
+      this.matchTimerEl.style.display = "none";
+      return;
+    }
+    this.matchTimerEl.style.display = "block";
+    this.matchTimerEl.textContent = formatClock(remainingMs);
+    this.matchTimerEl.style.color = remainingMs <= 30000 ? "#f55" : "#fff";
+  }
+
+  /** Show the end-of-match results board (ranked best players) with a Play-again button. */
+  showResults(standings: Standing[], myId: number, onPlayAgain: () => void): void {
+    const winner = standings[0];
+    const rows = standings
+      .map((s, i) => {
+        const swatch = "#" + (playerColor(s.id) & 0xffffff).toString(16).padStart(6, "0");
+        const mine = s.id === myId ? "background:rgba(255,221,85,.15);" : "";
+        const place = i === 0 ? "🏆" : `${i + 1}`;
+        return (
+          `<tr style="${mine}">` +
+          `<td style="padding:4px 14px 4px 0;text-align:right">${place}</td>` +
+          `<td style="padding:4px 8px"><span style="display:inline-block;width:12px;height:12px;` +
+          `background:${swatch};border-radius:2px;vertical-align:middle"></span></td>` +
+          `<td style="padding:4px 14px 4px 4px;text-align:left">${escapeHtml(s.name)}</td>` +
+          `<td style="padding:4px 14px;text-align:right">${s.frags}</td>` +
+          `<td style="padding:4px 0;text-align:right;opacity:.7">${s.deaths}</td>` +
+          `</tr>`
+        );
+      })
+      .join("");
+
+    this.resultsEl.innerHTML =
+      '<div style="font:700 34px monospace">MATCH OVER</div>' +
+      (winner
+        ? `<div style="font:600 20px monospace;opacity:.9">Winner: ${escapeHtml(winner.name)} — ${winner.frags} frags</div>`
+        : "") +
+      '<table style="border-collapse:collapse;font-size:16px;margin:6px 0">' +
+      '<tr style="opacity:.6"><th></th><th></th><th style="text-align:left">PLAYER</th>' +
+      '<th style="text-align:right;padding:0 14px">FRAGS</th><th style="text-align:right">DEATHS</th></tr>' +
+      rows +
+      "</table>" +
+      '<button id="play-again-btn" style="font:700 18px monospace;padding:10px 28px;cursor:pointer;' +
+      'background:#3c9;border:none;border-radius:4px;color:#062">Play again</button>';
+
+    const btn = this.resultsEl.querySelector("#play-again-btn") as HTMLButtonElement | null;
+    if (btn) btn.onclick = onPlayAgain;
+    this.resultsEl.style.display = "flex";
+  }
+
+  hideResults(): void {
+    this.resultsEl.style.display = "none";
   }
 
   /** Detach listeners and remove the overlay (for teardown/tests). */

@@ -15,6 +15,8 @@ import {
   SPAWN_PROTECTION_MS,
   MAX_MESSAGE_BYTES,
   RATE_LIMIT_MSGS_PER_SEC,
+  MATCH_DURATION_MS,
+  FRAG_LIMIT,
   decode,
   encode,
   sanitizeName,
@@ -34,8 +36,11 @@ import type {
   HitMsg,
   KillMsg,
   SpawnMsg,
+  MatchStartMsg,
+  MatchOverMsg,
 } from "./protocol";
 import { clampMove, validateShoot, chooseSpawn } from "./validate";
+import { matchOutcome, rankPlayers } from "./match";
 import type { Env } from "./index";
 
 interface PlayerRec {
@@ -63,6 +68,8 @@ export class GameRoom extends DurableObject<Env> {
   private nextId = 1;
   private tick = 0;
   private tickHandle: ReturnType<typeof setInterval> | undefined;
+  private matchEndsAt = 0; // server epoch ms the current match ends (0 = no match yet)
+  private matchOver = false;
 
   async fetch(req: Request): Promise<Response> {
     if (req.headers.get("Upgrade") !== "websocket") {
@@ -144,17 +151,56 @@ export class GameRoom extends DurableObject<Env> {
 
     this.players.set(ws, rec);
     this.byId.set(id, rec);
-    rec.p = chooseSpawn(SPAWN_POINTS as Vec3[], this.livingEnemyPositions(rec.id), Math.random);
 
+    // Send welcome FIRST so the client knows its id before any spawn/matchstart broadcast.
+    const startingNewMatch = this.matchOver || this.matchEndsAt === 0;
     const welcome: WelcomeMsg = {
       t: "welcome",
       id,
       tickRate: SERVER_TICK_HZ,
       players: existing,
+      matchEndsAt: startingNewMatch ? Date.now() + MATCH_DURATION_MS : this.matchEndsAt,
+      fragLimit: FRAG_LIMIT,
     };
     this.send(ws, welcome);
 
+    // Then start a fresh match (first player / after one finished) or spawn into the
+    // ongoing match. startMatch broadcasts the authoritative matchstart + spawns.
+    if (startingNewMatch) {
+      this.startMatch();
+    } else {
+      this.spawn(rec);
+      this.startLoop();
+    }
+  }
+
+  // Begin a fresh match: reset scores, respawn everyone, set the timer, broadcast.
+  private startMatch(): void {
+    this.matchEndsAt = Date.now() + MATCH_DURATION_MS;
+    this.matchOver = false;
+    for (const rec of this.players.values()) {
+      rec.frags = 0;
+      rec.deaths = 0;
+      this.spawn(rec); // resets hp/pos/protection + broadcasts a SpawnMsg
+    }
+    const msg: MatchStartMsg = { t: "matchstart", endsAt: this.matchEndsAt, fragLimit: FRAG_LIMIT };
+    this.broadcast(msg);
     this.startLoop();
+  }
+
+  // End the current match: rank players, broadcast results, and stop ticking (results
+  // are held until a "playagain"; an idle OVER room accrues no free-tier duration).
+  private endMatch(): void {
+    this.matchOver = true;
+    const standings = rankPlayers(
+      [...this.byId.values()].map((r) => ({ id: r.id, name: r.name, frags: r.frags, deaths: r.deaths })),
+    );
+    const msg: MatchOverMsg = { t: "matchover", standings };
+    this.broadcast(msg);
+    if (this.tickHandle !== undefined) {
+      clearInterval(this.tickHandle);
+      this.tickHandle = undefined;
+    }
   }
 
   private removePlayer(ws: WebSocket): void {
@@ -212,6 +258,10 @@ export class GameRoom extends DurableObject<Env> {
     }
     if (msg.t === "shoot") {
       this.handleShoot(rec, msg);
+      return;
+    }
+    if (msg.t === "playagain") {
+      if (this.matchOver) this.startMatch(); // only restarts when a match has ended
       return;
     }
   }
@@ -327,6 +377,16 @@ export class GameRoom extends DurableObject<Env> {
       }
     }
     if (this.players.size === 0) return;
+
+    // 2.5) Match end check (time expired or someone reached the frag limit).
+    if (!this.matchOver && this.matchEndsAt !== 0) {
+      let maxFrags = 0;
+      for (const rec of this.players.values()) if (rec.frags > maxFrags) maxFrags = rec.frags;
+      if (matchOutcome(now, this.matchEndsAt, maxFrags, FRAG_LIMIT)) {
+        this.endMatch();
+        return;
+      }
+    }
 
     // 3) Build + broadcast a SnapMsg.
     this.tick++;

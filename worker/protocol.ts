@@ -19,6 +19,8 @@ export const AIM_CONE_DOT = Math.cos((4 * Math.PI) / 180); // ~4 degrees (legacy
 export const HIT_RADIUS = 1.2;                            // accept a shot whose aim ray passes within this of the target body
 export const MAX_MOVE_SPEED = 12;                         // units/sec
 export const MOVE_SPEED_TOLERANCE = 1.6;                  // allow bursts (jump pads etc.)
+export const MATCH_DURATION_MS = 300_000;                 // 5-minute matches
+export const FRAG_LIMIT = 25;                             // match also ends at this many frags
 
 export type Vec3 = [number, number, number];
 export type Rot = [number, number];                       // [yaw, pitch] in radians
@@ -44,19 +46,23 @@ export const SPAWN_POINTS: readonly Vec3[] = [
 // ---- Client -> Server ----
 export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; }
 export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; }
-export type ClientMsg = InMsg | ShootMsg;
+export interface PlayAgainMsg { t: "playagain"; }
+export type ClientMsg = InMsg | ShootMsg | PlayAgainMsg;
 
 // ---- Server -> Client ----
 export interface PlayerSnap {
   id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number;
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
-export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; }
+export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; }
 export interface HitMsg     { t: "hit";     by: number; on: number; dmg: number; hp: number; head: boolean; }
 export interface KillMsg    { t: "kill";    by: number; on: number; w: number; }
 export interface SpawnMsg   { t: "spawn";   id: number; p: Vec3; prot: number; }
 export interface LeaveMsg   { t: "leave";   id: number; }
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg;
+export interface Standing { id: number; name: string; frags: number; deaths: number; }
+export interface MatchStartMsg { t: "matchstart"; endsAt: number; fragLimit: number; }
+export interface MatchOverMsg  { t: "matchover";  standings: Standing[]; }
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg;
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }
 export function decode<T>(raw: string): T | null { try { return JSON.parse(raw) as T; } catch { return null; } }

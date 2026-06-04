@@ -19,6 +19,8 @@ import {
   SPAWN_POINTS,
   MAX_MESSAGE_BYTES,
   RATE_LIMIT_MSGS_PER_SEC,
+  FRAG_LIMIT,
+  MATCH_DURATION_MS,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -30,6 +32,8 @@ import type {
   Rot,
   PlayerStateCode,
   SnapMsg,
+  MatchOverMsg,
+  MatchStartMsg,
 } from "../worker/protocol";
 
 // Get a stub for a room by name.
@@ -272,7 +276,7 @@ describe("GameRoom loopTick / idle / stop-on-empty", () => {
       id: welcomeA.id,
       name: "alice",
       hp: MAX_HP,
-      st: ST_ALIVE,
+      st: ST_PROTECTED, // players spawn with brief protection at match start
       frags: 0,
       deaths: 0,
     });
@@ -804,5 +808,68 @@ describe("GameRoom webSocketMessage guards", () => {
       expect(processed).toBe(1);
       expect(rec.rate.count).toBe(1);
     });
+  });
+});
+
+describe("GameRoom match lifecycle", () => {
+  it("starts a match on first join and welcome carries the timer + frag limit", async () => {
+    const stub = roomStub("match-welcome");
+    const a = await connect(stub, "alice");
+    const w = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    expect(w.fragLimit).toBe(FRAG_LIMIT);
+    expect(w.matchEndsAt).toBeGreaterThan(Date.now());
+    expect(w.matchEndsAt).toBeLessThanOrEqual(Date.now() + MATCH_DURATION_MS + 2000);
+    a.close();
+  });
+
+  it("ends the match at the frag limit and broadcasts sorted standings", async () => {
+    const stub = roomStub("match-fraglimit");
+    const a = await connect(stub, "alice");
+    const wa = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    const b = await connect(stub, "bob");
+    await nextMessage<WelcomeMsg>(b, ["welcome"]);
+
+    const overP = nextMessage<MatchOverMsg>(a, ["matchover"]);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.byId.get(wa.id).frags = FRAG_LIMIT; // top fragger; timer is still far away
+      i.loopTick();
+      expect(i.matchOver).toBe(true);
+      expect(i.tickHandle).toBeUndefined(); // ticking stops when the match ends
+    });
+    const over = await overP;
+    expect(over.standings.length).toBe(2);
+    expect(over.standings[0]!.id).toBe(wa.id); // most frags ranked first
+
+    a.close();
+    b.close();
+  });
+
+  it("playagain after a match resets scores and broadcasts a matchstart", async () => {
+    const stub = roomStub("match-playagain");
+    const a = await connect(stub, "alice");
+    const wa = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+
+    const overP = nextMessage<MatchOverMsg>(a, ["matchover"]); // listen BEFORE ending
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.byId.get(wa.id).frags = FRAG_LIMIT;
+      i.loopTick();
+      expect(i.matchOver).toBe(true);
+    });
+    await overP;
+
+    const startP = nextMessage<MatchStartMsg>(a, ["matchstart"]);
+    a.send(JSON.stringify({ t: "playagain" }));
+    const start = await startP;
+    expect(start.fragLimit).toBe(FRAG_LIMIT);
+    expect(start.endsAt).toBeGreaterThan(Date.now());
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      expect(i.matchOver).toBe(false);
+      expect(i.byId.get(wa.id).frags).toBe(0); // scores reset for the new match
+    });
+
+    a.close();
   });
 });
