@@ -4,7 +4,6 @@ import * as THREE from "three";
 import {
   MAX_HP,
   RESPAWN_MS,
-  INTERP_DELAY_MS,
   CLIENT_SEND_MS,
   EYE_HEIGHT,
   sanitizeRoom,
@@ -286,9 +285,10 @@ async function main(): Promise<void> {
     // Send InMsg at CLIENT_SEND_MS cadence (NOT per frame) — exactly one cadence line.
     sendAccum = sendInputIfDue(sendAccum, dtMs);
 
-    // Update remote players (interpolation + animation mixer).
-    const renderTime = Date.now() - INTERP_DELAY_MS;
-    for (const rp of remotes.values()) rp.update(renderTime, dtMs);
+    // Update remote players (interpolation + animation mixer). Pass the current epoch
+    // time; RemotePlayer.update subtracts INTERP_DELAY_MS itself (don't double-subtract).
+    const nowEpoch = Date.now();
+    for (const rp of remotes.values()) rp.update(nowEpoch, dtMs);
 
     // Update viewmodel (recoil ease + muzzle flash).
     viewmodel.update(dtMs);

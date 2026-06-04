@@ -15,7 +15,8 @@ export const LAGCOMP_MAX_REWIND_MS = 500;
 export const POSITION_BUFFER_MS = 1000;                   // keep ~1s of positions for rewind
 export const MAX_HP = 100;
 export const EYE_HEIGHT = 1.0;                            // capsule top y at spawn
-export const AIM_CONE_DOT = Math.cos((4 * Math.PI) / 180); // ~4 degrees
+export const AIM_CONE_DOT = Math.cos((4 * Math.PI) / 180); // ~4 degrees (legacy; superseded by HIT_RADIUS)
+export const HIT_RADIUS = 1.2;                            // accept a shot whose aim ray passes within this of the target body
 export const MAX_MOVE_SPEED = 12;                         // units/sec
 export const MOVE_SPEED_TOLERANCE = 1.6;                  // allow bursts (jump pads etc.)
 

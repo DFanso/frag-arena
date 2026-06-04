@@ -1,6 +1,6 @@
 // worker/validate.ts — pure combat + movement validation. No runtime deps.
 import {
-  AIM_CONE_DOT,
+  HIT_RADIUS,
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
   ST_ALIVE,
@@ -62,7 +62,16 @@ export function validateShoot(
   const dist = len(toTarget);
   if (dist > weapon.maxRange) return "range";
 
-  if (dot(norm(dir), norm(toTarget)) < AIM_CONE_DOT) return "aim";
+  // Range-independent aim check: does the shooter's aim ray pass within HIT_RADIUS of
+  // the target's body? This is far more forgiving (and correct) than a fixed angle cone
+  // for body-sized targets at close range, where a head/feet shot is many degrees off the
+  // eye->eye vector yet visually a clean hit. Replaces the old AIM_CONE_DOT test.
+  const dn = norm(dir);
+  const proj = dot(toTarget, dn); // distance to the closest point along the ray
+  if (proj <= 0) return "aim"; // target is behind the shooter
+  const perpSq = dot(toTarget, toTarget) - proj * proj;
+  const perp = Math.sqrt(Math.max(0, perpSq));
+  if (perp > HIT_RADIUS) return "aim";
 
   return null;
 }

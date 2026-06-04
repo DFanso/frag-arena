@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
-import { INTERP_DELAY_MS, type Vec3, type Rot, type InMsg } from "../worker/protocol";
+import { INTERP_DELAY_MS, EYE_HEIGHT, type Vec3, type Rot, type InMsg } from "../worker/protocol";
 import { sampleBuffer, type Snapshot } from "./interp";
 import { pickAnim } from "./anim";
 
@@ -48,6 +48,7 @@ export class LocalPlayer {
 }
 
 const SHOOT_CUE_MS = 350;
+const PLAYER_HEIGHT = 1.7; // visible character + hit-proxy height (feet at y=0 .. head at 1.7)
 
 export class RemotePlayer {
   readonly id: number;
@@ -67,21 +68,30 @@ export class RemotePlayer {
     this.group = new THREE.Group();
 
     // Invisible-but-raycastable proxy (raycaster skips visible:false, so use opacity 0).
+    // Sized + positioned to match the visible character (feet at 0 .. head at PLAYER_HEIGHT)
+    // so aiming at the on-screen player actually hits the raycast target.
     const proxyMat = new THREE.MeshBasicMaterial({
       transparent: true, opacity: 0, depthWrite: false, colorWrite: false,
     });
-    this.body = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.0, 0.7), proxyMat);
-    this.body.position.y = 0.5;
+    this.body = new THREE.Mesh(new THREE.BoxGeometry(0.8, PLAYER_HEIGHT, 0.6), proxyMat);
+    this.body.position.y = PLAYER_HEIGHT / 2;
     this.body.userData.playerId = id;
     this.group.add(this.body);
 
     if (character) {
       const model = cloneSkeleton(character.scene);
+      // Scale to a consistent player height regardless of the model's native units,
+      // then anchor its feet at the group origin (y=0).
+      model.updateMatrixWorld(true);
+      const size = new THREE.Vector3();
+      new THREE.Box3().setFromObject(model).getSize(size);
+      model.scale.setScalar(PLAYER_HEIGHT / (size.y || 1));
+      model.updateMatrixWorld(true);
+      const fitted = new THREE.Box3().setFromObject(model);
+      model.position.y = -fitted.min.y; // lift so the lowest point (feet) sits at y=0
       model.traverse((o) => {
         if ((o as THREE.Mesh).isMesh) { o.castShadow = true; o.receiveShadow = true; }
       });
-      // RobotExpressive is ~ unit-tall already; scale/anchor so feet sit at y=0.
-      model.position.y = 0;
       this.group.add(model);
       this.mixer = new THREE.AnimationMixer(model);
       for (const clip of character.animations) {
@@ -90,12 +100,12 @@ export class RemotePlayer {
       this.current = this.actions["Idle"] ?? null;
       this.current?.play();
     } else {
-      // Fallback: the v1 colored box.
+      // Fallback: a colored box sized like the proxy/player.
       const box = new THREE.Mesh(
-        new THREE.BoxGeometry(0.7, 1.0, 0.7),
+        new THREE.BoxGeometry(0.8, PLAYER_HEIGHT, 0.6),
         new THREE.MeshStandardMaterial({ color: 0xff5544 }),
       );
-      box.position.y = 0.5;
+      box.position.y = PLAYER_HEIGHT / 2;
       box.castShadow = true;
       this.group.add(box);
     }
@@ -130,7 +140,9 @@ export class RemotePlayer {
   update(nowMs: number, dtMs: number): void {
     const sample = sampleBuffer(this.buffer, nowMs - INTERP_DELAY_MS);
     if (sample) {
-      this.group.position.set(sample.p[0], sample.p[1] - 0.5, sample.p[2]); // feet at ground
+      // Server p is the eye position (y = EYE_HEIGHT); subtract it so the group origin
+      // (the character's feet + proxy base) sits on the ground.
+      this.group.position.set(sample.p[0], sample.p[1] - EYE_HEIGHT, sample.p[2]);
       this.group.rotation.y = sample.r[0];
     }
     if (this.mixer) {

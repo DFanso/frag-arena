@@ -11,7 +11,7 @@ import {
 } from "../worker/validate";
 import {
   WEAPONS,
-  AIM_CONE_DOT,
+  HIT_RADIUS,
   ST_ALIVE,
   ST_DEAD,
   ST_PROTECTED,
@@ -128,33 +128,37 @@ describe("validateShoot", () => {
     ).toBe("range");
   });
 
-  it("rejects 'aim' when the reported direction is outside the aim cone", () => {
-    // target at +z but the player claims to fire along +x => well outside ~4 degrees
+  it("rejects 'aim' when firing perpendicular to the target (ray never approaches it)", () => {
+    // target at +z but the player claims to fire along +x => ray goes nowhere near it
     expect(
       validateShoot(aliveShooter({ lastShotAt: NOW - 1000 }), aliveTarget(), [1, 0, 0], RIFLE, NOW),
     ).toBe("aim");
   });
 
-  it("accepts a shot just inside the aim cone", () => {
-    // tiny lateral offset still inside ~4 degrees of the +z axis
-    const slightlyOff: Vec3 = [0.02, 0, 1];
-    const result = validateShoot(
-      aliveShooter({ lastShotAt: NOW - 1000 }),
-      aliveTarget(),
-      slightlyOff,
-      RIFLE,
-      NOW,
-    );
-    expect(result).toBeNull();
+  it("rejects 'aim' when the target is behind the shooter", () => {
+    // target at +z, but firing along -z => projection onto the ray is negative
+    expect(
+      validateShoot(aliveShooter({ lastShotAt: NOW - 1000 }), aliveTarget(), [0, 0, -1], RIFLE, NOW),
+    ).toBe("aim");
   });
 
-  it("the aim-cone uses AIM_CONE_DOT as the threshold (dot below => reject)", () => {
-    // build a dir that is just outside the cone boundary -> reject
-    const angle = Math.acos(AIM_CONE_DOT) + 0.01; // just outside the cone
-    const off: Vec3 = [Math.sin(angle), 0, Math.cos(angle)];
-    expect(
-      validateShoot(aliveShooter({ lastShotAt: NOW - 1000 }), aliveTarget(), off, RIFLE, NOW),
-    ).toBe("aim");
+  it("accepts a CLOSE-RANGE shot aimed at the target's head (ray within HIT_RADIUS)", () => {
+    // Regression for "direct hits miss": shooter at [0,1,0], target eye at [0,1,3].
+    // Aiming up at the head is ~18 degrees off the eye->eye vector (old 4-degree cone
+    // would WRONGLY reject), but the ray passes ~0.95u from the target centre < HIT_RADIUS.
+    const shooter = aliveShooter({ lastShotAt: NOW - 1000 });
+    const target = aliveTarget({ p: [0, 1, 3] });
+    const aimAtHead: Vec3 = [0, 1, 3]; // from [0,1,0] toward [0,2,3]
+    expect(validateShoot(shooter, target, aimAtHead, RIFLE, NOW)).toBeNull();
+  });
+
+  it("rejects 'aim' when the ray passes farther than HIT_RADIUS from the target", () => {
+    // shooter [0,1,0], target [0,1,3]; aim steeply upward so the ray clears the body
+    const shooter = aliveShooter({ lastShotAt: NOW - 1000 });
+    const target = aliveTarget({ p: [0, 1, 3] });
+    const aimHigh: Vec3 = [0, 4, 3]; // perpendicular distance ~2.4u > HIT_RADIUS (1.2)
+    expect(validateShoot(shooter, target, aimHigh, RIFLE, NOW)).toBe("aim");
+    expect(HIT_RADIUS).toBeLessThan(2.4); // guard: the test's margin assumes this
   });
 });
 

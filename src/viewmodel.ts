@@ -33,7 +33,7 @@ export class Viewmodel {
       model.position.set(-center.x * s, -center.y * s, -center.z * s);
       const holder = new THREE.Group();
       holder.add(model);
-      holder.rotation.y = Math.PI; // face forward (-z); tuned visually
+      holder.rotation.y = 0; // barrel forward (-z); tuned visually below
       gunObj = holder;
     } else {
       // primitive fallback gun
