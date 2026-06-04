@@ -97,7 +97,7 @@ export class Hud {
     prompt.style.cssText =
       "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
       "background:rgba(0,0,0,.55);color:#fff;font-size:24px;text-align:center;";
-    prompt.textContent = "Click to play  ·  WASD move · Space jump · Mouse aim · Click shoot · Tab scores";
+    prompt.textContent = "Click to play  ·  WASD move · Shift sprint · Space jump · Mouse aim · Click shoot · Tab scores";
     root.appendChild(prompt);
     this.prompt = prompt;
 

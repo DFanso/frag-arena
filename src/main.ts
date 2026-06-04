@@ -6,6 +6,7 @@ import {
   RESPAWN_MS,
   CLIENT_SEND_MS,
   EYE_HEIGHT,
+  ST_DEAD,
   sanitizeRoom,
   sanitizeName,
 } from "../worker/protocol";
@@ -183,8 +184,10 @@ async function main(): Promise<void> {
         }
       } else {
         const rp = ensureRemote(ps);
+        rp.setAlive(ps.st !== ST_DEAD); // dead players are hidden instantly
         rp.addSnapshot({ t: m.ts, p: ps.p, r: ps.r });
         rp.setVelocity(ps.v);
+        rp.setHealth(ps.hp);
       }
     }
   });
@@ -206,6 +209,8 @@ async function main(): Promise<void> {
       hud.showDeath(nameOf(m.by));
       deadUntil = performance.now() + RESPAWN_MS;
     }
+    // The victim vanishes immediately (don't wait for the next snapshot).
+    remotes.get(m.on)?.setAlive(false);
     // Trigger shoot cue on the remote who got the kill.
     remotes.get(m.by)?.playShoot();
   });
@@ -215,6 +220,13 @@ async function main(): Promise<void> {
       hud.setHealth(MAX_HP);
       hud.hideDeath();
       controls.setPosition(m.p);
+    } else {
+      // A remote respawned: reappear at the spawn point (no slide from the death spot).
+      const rp = remotes.get(m.id);
+      if (rp !== undefined) {
+        rp.resetTo(m.p);
+        rp.setAlive(true);
+      }
     }
   });
 

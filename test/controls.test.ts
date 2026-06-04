@@ -1,6 +1,15 @@
 // test/controls.test.ts
 import { describe, it, expect } from "vitest";
-import { clampDelta, axisFromKeys, MAX_DELTA } from "../src/controls";
+import {
+  clampDelta,
+  axisFromKeys,
+  moveAccel,
+  MAX_DELTA,
+  MOVE_SPEED,
+  SPRINT_MULT,
+  DAMPING_GROUND,
+} from "../src/controls";
+import { MAX_MOVE_SPEED, MOVE_SPEED_TOLERANCE } from "../worker/protocol";
 
 describe("clampDelta", () => {
   it("passes a normal frame delta through unchanged", () => {
@@ -38,5 +47,23 @@ describe("axisFromKeys", () => {
 
   it("cancels opposing keys to zero", () => {
     expect(axisFromKeys({ w: true, a: true, s: true, d: true })).toEqual({ fwd: 0, right: 0 });
+  });
+});
+
+describe("moveAccel (sprint)", () => {
+  it("sprinting raises ground accel by SPRINT_MULT", () => {
+    expect(moveAccel(true, false)).toBe(MOVE_SPEED);
+    expect(moveAccel(true, true)).toBe(MOVE_SPEED * SPRINT_MULT);
+  });
+
+  it("airborne control is reduced (and still scales with sprint)", () => {
+    expect(moveAccel(false, false)).toBeCloseTo(MOVE_SPEED * 0.3, 6);
+    expect(moveAccel(false, true)).toBeCloseTo(MOVE_SPEED * 0.3 * SPRINT_MULT, 6);
+  });
+
+  it("steady-state sprint speed stays within the server movement clamp", () => {
+    // equilibrium ground speed ~= accel / DAMPING_GROUND; must be <= server budget
+    const sprintSpeed = moveAccel(true, true) / DAMPING_GROUND;
+    expect(sprintSpeed).toBeLessThanOrEqual(MAX_MOVE_SPEED * MOVE_SPEED_TOLERANCE);
   });
 });

@@ -12,9 +12,17 @@ import { EYE_HEIGHT, type Vec3, type Rot } from "../worker/protocol";
 export const GRAVITY = 30;          // units/sec^2 (downward)
 export const JUMP_SPEED = 9;        // initial upward velocity on jump
 export const MOVE_SPEED = 40;       // ground acceleration factor
+export const SPRINT_MULT = 1.7;     // accel multiplier while sprinting (Shift)
 export const DAMPING_GROUND = 8;    // velocity damping per second while grounded
 export const DAMPING_AIR = 0.2;     // velocity damping per second while airborne
 export const MAX_DELTA = 0.1;       // clamp render delta (seconds) after tab switches
+
+// Pure: acceleration factor for this frame. Airborne control is reduced; Shift sprints.
+// Steady-state ground speed = accel / DAMPING_GROUND, so sprint stays within the server's
+// movement clamp (MAX_MOVE_SPEED * MOVE_SPEED_TOLERANCE) and never rubber-bands.
+export function moveAccel(onFloor: boolean, sprinting: boolean): number {
+  return MOVE_SPEED * (onFloor ? 1 : 0.3) * (sprinting ? SPRINT_MULT : 1);
+}
 
 export interface KeyState { w: boolean; a: boolean; s: boolean; d: boolean; }
 export interface MoveAxis { fwd: number; right: number; }
@@ -41,6 +49,7 @@ export class FpsControls {
   private onFloor = false;
   private keys: KeyState = { w: false, a: false, s: false, d: false };
   private wantJump = false;
+  private sprinting = false;
   private lockChangeCbs: ((locked: boolean) => void)[] = [];
 
   // scratch vectors (avoid per-frame allocation)
@@ -112,7 +121,7 @@ export class FpsControls {
       const axis = axisFromKeys(this.keys);
       this.getForwardVector(this.fwdDir);
       this.getRightVector(this.rightDir);
-      const accel = MOVE_SPEED * (this.onFloor ? 1 : 0.3);
+      const accel = moveAccel(this.onFloor, this.sprinting);
       this.velocity.addScaledVector(this.fwdDir, axis.fwd * accel * dt);
       this.velocity.addScaledVector(this.rightDir, axis.right * accel * dt);
       if (this.wantJump && this.onFloor) {
@@ -172,6 +181,7 @@ export class FpsControls {
       case "KeyS": this.keys.s = true; break;
       case "KeyD": this.keys.d = true; break;
       case "Space": this.wantJump = true; break;
+      case "ShiftLeft": case "ShiftRight": this.sprinting = true; break;
     }
   };
   private onKeyUp = (e: KeyboardEvent): void => {
@@ -180,6 +190,7 @@ export class FpsControls {
       case "KeyA": this.keys.a = false; break;
       case "KeyS": this.keys.s = false; break;
       case "KeyD": this.keys.d = false; break;
+      case "ShiftLeft": case "ShiftRight": this.sprinting = false; break;
     }
   };
 }

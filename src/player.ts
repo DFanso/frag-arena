@@ -4,9 +4,10 @@
 import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
-import { INTERP_DELAY_MS, EYE_HEIGHT, type Vec3, type Rot, type InMsg } from "../worker/protocol";
+import { INTERP_DELAY_MS, EYE_HEIGHT, MAX_HP, type Vec3, type Rot, type InMsg } from "../worker/protocol";
 import { sampleBuffer, type Snapshot } from "./interp";
 import { pickAnim } from "./anim";
+import { healthFraction, healthColor } from "./health-ui";
 
 // Snap the local player to the server position only when divergence exceeds this (world units).
 export const RECONCILE_DIST = 2.0;
@@ -55,6 +56,11 @@ export class RemotePlayer {
   readonly group: THREE.Group;
   readonly body: THREE.Mesh; // invisible raycast proxy (userData.playerId)
   private nameplate: THREE.Sprite;
+  private healthBar: THREE.Sprite;
+  private healthCanvas: HTMLCanvasElement;
+  private healthCtx: CanvasRenderingContext2D;
+  private healthTex: THREE.CanvasTexture;
+  private lastHp = MAX_HP;
   private buffer: Snapshot[] = [];
   private speedXZ = 0;
   private shootingUntil = 0;
@@ -111,9 +117,58 @@ export class RemotePlayer {
     }
 
     this.nameplate = RemotePlayer.makeNameplate(name);
-    this.nameplate.position.y = 2.2;
+    this.nameplate.position.y = 2.25;
     this.nameplate.userData.noHit = true;
     this.group.add(this.nameplate);
+
+    // Enemy health bar (billboard just below the nameplate, above the head).
+    this.healthCanvas = document.createElement("canvas");
+    this.healthCanvas.width = 128;
+    this.healthCanvas.height = 16;
+    this.healthCtx = this.healthCanvas.getContext("2d")!;
+    this.healthTex = new THREE.CanvasTexture(this.healthCanvas);
+    this.healthBar = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: this.healthTex, depthTest: false }),
+    );
+    this.healthBar.scale.set(1.0, 0.13, 1);
+    this.healthBar.position.y = 1.98;
+    this.healthBar.userData.noHit = true;
+    this.group.add(this.healthBar);
+    this.drawHealth(MAX_HP);
+  }
+
+  // Redraw the health bar canvas (dark track + colored fill proportional to hp).
+  private drawHealth(hp: number): void {
+    const frac = healthFraction(hp, MAX_HP);
+    const c = this.healthCtx;
+    const w = this.healthCanvas.width;
+    const h = this.healthCanvas.height;
+    const pad = 2;
+    c.clearRect(0, 0, w, h);
+    c.fillStyle = "rgba(0,0,0,0.6)";
+    c.fillRect(0, 0, w, h);
+    c.fillStyle = healthColor(frac);
+    c.fillRect(pad, pad, (w - 2 * pad) * frac, h - 2 * pad);
+    this.healthTex.needsUpdate = true;
+  }
+
+  // Update the enemy's health bar from the latest snapshot (no-op if unchanged).
+  setHealth(hp: number): void {
+    if (hp === this.lastHp) return;
+    this.lastHp = hp;
+    this.drawHealth(hp);
+  }
+
+  // Show/hide the whole player (dead players vanish instantly, reappear on respawn).
+  setAlive(alive: boolean): void {
+    this.group.visible = alive;
+  }
+
+  // Snap to a new position and drop buffered history (used on respawn so the player
+  // appears at the spawn point instead of sliding across the map from the death spot).
+  resetTo(p: Vec3): void {
+    this.buffer.length = 0;
+    this.group.position.set(p[0], p[1] - EYE_HEIGHT, p[2]);
   }
 
   addSnapshot(s: Snapshot): void {
@@ -162,6 +217,8 @@ export class RemotePlayer {
     const tex = (this.nameplate.material as THREE.SpriteMaterial).map;
     if (tex) tex.dispose();
     this.nameplate.material.dispose();
+    this.healthTex.dispose();
+    this.healthBar.material.dispose();
     (this.body.material as THREE.Material).dispose();
     this.body.geometry.dispose();
   }
