@@ -27,14 +27,19 @@ export function resolveCollision(
   octree: Octree,
   velocity: THREE.Vector3,
 ): boolean {
-  const result = octree.capsuleIntersect(collider);
   let onFloor = false;
 
-  if (result) {
-    // A near-upward normal means we can stand on the surface.
-    onFloor = result.normal.y > 0;
+  // Resolve a few times per frame: one capsuleIntersect only fixes the deepest
+  // overlap, so in corners / against multiple boxes (houses, cover bases) a single
+  // pass can leave the player wedged inside. Iterating pushes fully clear.
+  for (let i = 0; i < 4; i++) {
+    const result = octree.capsuleIntersect(collider);
+    if (!result) break;
 
-    if (!onFloor) {
+    // A near-upward normal means we can stand on the surface.
+    if (result.normal.y > 0) {
+      onFloor = true;
+    } else {
       // Cancel the inbound velocity component along the wall normal (slide).
       velocity.addScaledVector(result.normal, -result.normal.dot(velocity));
     }
