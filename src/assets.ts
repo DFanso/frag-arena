@@ -7,6 +7,9 @@ export interface AssetRegistry {
   gun: GLTF | null;
   crate: GLTF | null;
   barrel: GLTF | null;
+  container: GLTF | null;
+  rock: GLTF | null;
+  tree: GLTF | null;
 }
 
 const FILES: Record<keyof AssetRegistry, string> = {
@@ -14,6 +17,9 @@ const FILES: Record<keyof AssetRegistry, string> = {
   gun: "/models/gun.glb",
   crate: "/models/crate.glb",
   barrel: "/models/barrel.glb",
+  container: "/models/container.glb",
+  rock: "/models/rock.glb",
+  tree: "/models/tree.glb",
 };
 
 function loadOne(loader: GLTFLoader, url: string): Promise<GLTF | null> {
@@ -26,7 +32,10 @@ function loadOne(loader: GLTFLoader, url: string): Promise<GLTF | null> {
 export async function loadAssets(onProgress?: (label: string) => void): Promise<AssetRegistry> {
   const loader = new GLTFLoader();
   const keys = Object.keys(FILES) as (keyof AssetRegistry)[];
-  const reg = { character: null, gun: null, crate: null, barrel: null } as AssetRegistry;
+  const reg = {
+    character: null, gun: null, crate: null, barrel: null,
+    container: null, rock: null, tree: null,
+  } as AssetRegistry;
   for (const key of keys) {
     onProgress?.(`Loading ${key}…`);
     reg[key] = await loadOne(loader, FILES[key]);

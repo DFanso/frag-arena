@@ -38,9 +38,10 @@ export const ST_PROTECTED = 3;                            // alive + spawn prote
 export type PlayerStateCode = typeof ST_DEAD | typeof ST_ALIVE | typeof ST_PROTECTED;
 
 // Server-assigned spawn points (ground positions; capsule end y = EYE_HEIGHT).
+// Spread around the 100x100 arena (radius ~38), clear of the central tower.
 export const SPAWN_POINTS: readonly Vec3[] = [
-  [-24, EYE_HEIGHT, -24], [24, EYE_HEIGHT, -24], [24, EYE_HEIGHT, 24],
-  [-24, EYE_HEIGHT, 24], [0, EYE_HEIGHT, -24], [0, EYE_HEIGHT, 24],
+  [-38, EYE_HEIGHT, -38], [38, EYE_HEIGHT, -38], [38, EYE_HEIGHT, 38], [-38, EYE_HEIGHT, 38],
+  [0, EYE_HEIGHT, -38], [0, EYE_HEIGHT, 38], [-38, EYE_HEIGHT, 0], [38, EYE_HEIGHT, 0],
 ];
 
 // ---- Client -> Server ----

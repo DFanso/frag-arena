@@ -135,16 +135,16 @@ async function main(): Promise<void> {
   // Scene + sky + lights (v1.1 — replaced v1 flat ambient/basic lighting).
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x9fc4e8);
-  scene.fog = new THREE.Fog(0x9fc4e8, 60, 140);
+  scene.fog = new THREE.Fog(0x9fc4e8, 80, 180);
   const hemi = new THREE.HemisphereLight(0xbfe3ff, 0x4a5a3a, 0.9);
   scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xfff2d8, 1.1);
   sun.position.set(30, 50, 20);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -40; sun.shadow.camera.right = 40;
-  sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40;
-  sun.shadow.camera.far = 150;
+  sun.shadow.camera.left = -55; sun.shadow.camera.right = 55;
+  sun.shadow.camera.top = 55; sun.shadow.camera.bottom = -55;
+  sun.shadow.camera.far = 220;
   scene.add(sun);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
   const reg = await loadAssets();
 
   // Arena geometry + collision octree.
-  const arena = buildArena({ crate: reg.crate, barrel: reg.barrel });
+  const arena = buildArena(reg);
   scene.add(arena.visual);
   const octree = buildOctree(arena.collision);
 
