@@ -28,6 +28,8 @@ export class WeaponController {
   private timers: Array<ReturnType<typeof setTimeout> | undefined> = WEAPONS.map(() => undefined);
   private ads = false;
   private lastThrow = 0;
+  private firing = false;   // left mouse button held
+  private lastFireAt = 0;   // performance.now() of the last shot (client fire-rate gate)
 
   private readonly onMouseDown: (e: MouseEvent) => void;
   private readonly onMouseUp: (e: MouseEvent) => void;
@@ -38,10 +40,13 @@ export class WeaponController {
   constructor(private d: WeaponDeps) {
     this.onMouseDown = (e) => {
       if (!d.isLocked()) return;
-      if (e.button === 0) this.fire();
+      if (e.button === 0) { this.firing = true; this.fire(); }
       else if (e.button === 2) this.setADS(true);
     };
-    this.onMouseUp = (e) => { if (e.button === 2) this.setADS(false); };
+    this.onMouseUp = (e) => {
+      if (e.button === 0) this.firing = false;
+      else if (e.button === 2) this.setADS(false);
+    };
     this.onKeyDown = (e) => {
       if (!d.isLocked()) return;
       if (e.code === "KeyR") this.startReload(this.cur);
@@ -50,7 +55,7 @@ export class WeaponController {
       else if (e.code === "KeyG") this.throwGrenade();
     };
     this.onCtx = (e) => e.preventDefault();
-    this.onLock = () => { if (!d.isLocked()) this.setADS(false); };
+    this.onLock = () => { if (!d.isLocked()) { this.setADS(false); this.firing = false; } };
 
     d.dom.addEventListener("mousedown", this.onMouseDown);
     window.addEventListener("mouseup", this.onMouseUp);
@@ -85,10 +90,19 @@ export class WeaponController {
     this.timers[w] = setTimeout(() => this.finishReload(w), wp.reloadMs);
   }
 
+  // Auto-fire: keep firing while the trigger is held on a full-auto weapon (rate-limited
+  // by the weapon's cooldown so the client stays in sync with the server). Called per frame.
+  update(): void {
+    if (this.firing && this.d.isLocked() && WEAPONS[this.cur]!.auto) this.fire();
+  }
+
   private fire(): void {
     const w = this.cur;
+    const now = performance.now();
+    if (now - this.lastFireAt < WEAPONS[w]!.cooldownMs) return; // client fire-rate gate
     if (this.reloading[w]) return;
     if (this.clip[w]! <= 0) { this.d.sfx.dryFire(); this.startReload(w); return; }
+    this.lastFireAt = now;
     this.clip[w]! -= 1;
     this.emit();
     const res = fireRay(this.d.camera, this.d.getTargets());
@@ -145,6 +159,8 @@ export class WeaponController {
     this.cur = 0;
     this.ads = false;
     this.lastThrow = 0;
+    this.firing = false;
+    this.lastFireAt = 0;
     this.applyFov();
     this.d.onScope(false);
     this.d.onWeapon(WEAPONS[0]!.name, 0);

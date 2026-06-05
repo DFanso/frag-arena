@@ -533,7 +533,8 @@ async function main(): Promise<void> {
     grenades.update(dt);
     pickups.update(dt, nowEpoch);
 
-    // Update viewmodel (recoil ease + muzzle flash).
+    // Auto-fire (hold-to-shoot for full-auto weapons) + viewmodel recoil/flash ease.
+    shootHandle?.update();
     viewmodel.update(dtMs);
 
     // Death countdown HUD update.
