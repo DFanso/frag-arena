@@ -20,6 +20,12 @@ import {
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
   MOVE_BUDGET_SEC,
+  GRENADE_SPEED,
+  GRENADE_GRAVITY,
+  GRENADE_FUSE_MS,
+  GRENADE_RADIUS,
+  GRENADE_DAMAGE,
+  GRENADE_COOLDOWN_MS,
   decode,
   encode,
   sanitizeName,
@@ -43,6 +49,8 @@ import type {
   MatchOverMsg,
   LobbyMsg,
   LobbyPlayer,
+  ThrowMsg,
+  GrenadeMsg,
 } from "./protocol";
 import { validateShoot, chooseSpawn } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
@@ -71,7 +79,11 @@ interface PlayerRec {
   ammo: number[];        // rounds in the magazine, per weapon id
   reserveAmmo: number[]; // rounds in reserve, per weapon id
   reloadEndsAt: number[]; // server epoch ms a reload completes, per weapon (0 = not reloading)
+  lastGrenadeAt: number; // server epoch ms of the last grenade throw (cooldown)
 }
+
+// A thrown grenade in flight, awaiting detonation.
+interface ActiveGrenade { pos: Vec3; explodeAt: number; shooterId: number; }
 
 export class GameRoom extends DurableObject<Env> {
   private players = new Map<WebSocket, PlayerRec>();
@@ -81,6 +93,7 @@ export class GameRoom extends DurableObject<Env> {
   private tickHandle: ReturnType<typeof setInterval> | undefined;
   private matchEndsAt = 0;     // server epoch ms the current match ends (0 = no active match)
   private matchActive = false; // a match is currently running (vs lobby / ready-up phase)
+  private grenades: ActiveGrenade[] = []; // thrown grenades awaiting detonation
 
   async fetch(req: Request): Promise<Response> {
     if (req.headers.get("Upgrade") !== "websocket") {
@@ -132,6 +145,7 @@ export class GameRoom extends DurableObject<Env> {
     rec.ammo = WEAPONS.map((w) => w.clipSize);        // full mags + reserve on (re)spawn
     rec.reserveAmmo = WEAPONS.map((w) => w.reserveAmmo);
     rec.reloadEndsAt = WEAPONS.map(() => 0);
+    rec.lastGrenadeAt = 0;
     const msg: SpawnMsg = { t: "spawn", id: rec.id, p: rec.p, prot: SPAWN_PROTECTION_MS };
     this.broadcast(msg);
   }
@@ -162,6 +176,7 @@ export class GameRoom extends DurableObject<Env> {
       ammo: WEAPONS.map((w) => w.clipSize),
       reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
       reloadEndsAt: WEAPONS.map(() => 0),
+      lastGrenadeAt: 0,
     };
 
     // Welcome carries the snapshots of players already IN THE MATCH (so a late joiner can
@@ -231,6 +246,7 @@ export class GameRoom extends DurableObject<Env> {
     const msg: MatchOverMsg = { t: "matchover", standings };
     this.broadcast(msg);
     for (const rec of this.players.values()) { rec.inMatch = false; rec.ready = false; }
+    this.grenades = [];
     this.matchEndsAt = 0;
     this.broadcastLobby();
   }
@@ -308,6 +324,10 @@ export class GameRoom extends DurableObject<Env> {
     }
     if (msg.t === "reload") {
       this.handleReload(rec, msg.w);
+      return;
+    }
+    if (msg.t === "throw") {
+      this.handleThrow(rec, msg);
       return;
     }
   }
@@ -404,6 +424,43 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
+  // Throw a grenade: compute its ballistic detonation point/time server-side (no bounces; it
+  // bursts on the fuse or when the arc reaches the ground), schedule the AoE, and broadcast
+  // the arc so every client renders the same flying grenade + detonation.
+  private handleThrow(rec: PlayerRec, m: ThrowMsg): void {
+    if (!rec.inMatch) return;
+    const now = Date.now();
+    if (now - rec.lastGrenadeAt < GRENADE_COOLDOWN_MS) return;
+    rec.lastGrenadeAt = now;
+    if (rec.st === ST_PROTECTED) { rec.st = ST_ALIVE; rec.protectedUntil = 0; }
+
+    const dl = Math.hypot(m.d[0], m.d[1], m.d[2]) || 1;
+    const v: Vec3 = [(m.d[0] / dl) * GRENADE_SPEED, (m.d[1] / dl) * GRENADE_SPEED, (m.d[2] / dl) * GRENADE_SPEED];
+    const g = GRENADE_GRAVITY;
+    const tGround = (v[1] + Math.sqrt(Math.max(0, v[1] * v[1] + 2 * g * m.o[1]))) / g; // sec to y=0
+    const t = Math.min(GRENADE_FUSE_MS / 1000, tGround > 0 ? tGround : GRENADE_FUSE_MS / 1000);
+    const pos: Vec3 = [
+      m.o[0] + v[0] * t,
+      Math.max(0, m.o[1] + v[1] * t - 0.5 * g * t * t),
+      m.o[2] + v[2] * t,
+    ];
+    this.grenades.push({ pos, explodeAt: now + t * 1000, shooterId: rec.id });
+    const gm: GrenadeMsg = { t: "grenade", o: m.o, v, fuseMs: t * 1000 };
+    this.broadcast(gm);
+  }
+
+  // Detonate a grenade: AoE damage with linear falloff to everyone alive in the blast radius.
+  private detonate(gr: ActiveGrenade): void {
+    const killer = this.byId.get(gr.shooterId);
+    for (const v of this.players.values()) {
+      if (!v.inMatch || v.st === ST_DEAD || v.st === ST_PROTECTED) continue;
+      const dx = v.p[0] - gr.pos[0], dy = v.p[1] - gr.pos[1], dz = v.p[2] - gr.pos[2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist > GRENADE_RADIUS) continue;
+      this.applyDamage(v, GRENADE_DAMAGE * (1 - dist / GRENADE_RADIUS), killer ?? v, false);
+    }
+  }
+
   // Apply damage, broadcast a hit, and handle death/respawn/scoring (T7).
   private applyDamage(target: PlayerRec, dmg: number, killer: PlayerRec, head: boolean): void {
     if (target.st === ST_DEAD || target.st === ST_PROTECTED) return;
@@ -423,7 +480,7 @@ export class GameRoom extends DurableObject<Env> {
       target.st = ST_DEAD;
       target.deaths += 1;
       target.respawnAt = Date.now() + RESPAWN_MS;
-      killer.frags += 1;
+      if (killer.id !== target.id) killer.frags += 1; // no frag credit for a self-kill (e.g. own grenade)
       const kill: KillMsg = { t: "kill", by: killer.id, on: target.id, w: 0 };
       this.broadcast(kill);
     }
@@ -477,6 +534,16 @@ export class GameRoom extends DurableObject<Env> {
     let anyInMatch = false;
     for (const rec of this.players.values()) if (rec.inMatch) { anyInMatch = true; break; }
     if (!anyInMatch) { this.endMatch(); return; }
+
+    // Detonate grenades whose fuse has elapsed (AoE damage).
+    if (this.grenades.length) {
+      const remaining: ActiveGrenade[] = [];
+      for (const gr of this.grenades) {
+        if (now >= gr.explodeAt) this.detonate(gr);
+        else remaining.push(gr);
+      }
+      this.grenades = remaining;
+    }
 
     // 2.5) Match end check (time expired or someone reached the frag limit).
     let maxFrags = 0;

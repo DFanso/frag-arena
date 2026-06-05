@@ -22,6 +22,7 @@ import type {
   MatchOverMsg,
   LobbyMsg,
   LobbyPlayer,
+  GrenadeMsg,
 } from "../worker/protocol";
 import { Net } from "./net";
 import { buildArena } from "./map";
@@ -29,6 +30,7 @@ import { buildOctree } from "./physics";
 import { FpsControls } from "./controls";
 import { LocalPlayer, RemotePlayer } from "./player";
 import { WeaponController } from "./weapons";
+import { Grenades } from "./projectiles";
 import { Hud } from "./hud";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
@@ -278,6 +280,9 @@ async function main(): Promise<void> {
   // First-person weapon viewmodel (attached to camera).
   const viewmodel = new Viewmodel(camera, reg.gun);
 
+  // Thrown-grenade visuals + explosion FX (damage is server-authoritative via HitMsg).
+  const grenades = new Grenades(scene, reg.grenade, () => sfx.explosion());
+
   // Death state tracking.
   let deadUntil = 0;
 
@@ -408,6 +413,10 @@ async function main(): Promise<void> {
     }
   });
 
+  net.on("grenade", (m: GrenadeMsg) => {
+    grenades.spawn(m.o, m.v, m.fuseMs);
+  });
+
   net.on("matchstart", (m: MatchStartMsg) => {
     matchEndsAt = m.endsAt;
     phase = "match";
@@ -495,6 +504,7 @@ async function main(): Promise<void> {
     // time; RemotePlayer.update subtracts INTERP_DELAY_MS itself (don't double-subtract).
     const nowEpoch = Date.now();
     for (const rp of remotes.values()) rp.update(nowEpoch, dtMs);
+    grenades.update(dt);
 
     // Update viewmodel (recoil ease + muzzle flash).
     viewmodel.update(dtMs);

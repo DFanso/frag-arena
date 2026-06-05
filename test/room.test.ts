@@ -395,6 +395,7 @@ function makeRec(
     ammo: WEAPONS.map((w) => w.clipSize),
     reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
     reloadEndsAt: WEAPONS.map(() => 0),
+    lastGrenadeAt: 0,
   };
 }
 
@@ -588,6 +589,42 @@ describe("GameRoom ammo / reload", () => {
       expect(rec.ammo[0]).toBe(w.clipSize);
       expect(rec.reserveAmmo[0]).toBe(50 - (w.clipSize - 5));
       expect(rec.reloadEndsAt[0]).toBe(0);
+    });
+  });
+});
+
+// ---- grenade AoE (issue #1) ----
+describe("GameRoom grenade", () => {
+  it("detonates with linear-falloff AoE damage to players in the blast radius", async () => {
+    const stub = env.ROOMS.getByName("nade-aoe");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & { grenades: unknown[]; detonate: (g: unknown) => void };
+      inst.broadcast = () => {};
+      const thrower = makeRec(1, [0, 1, 0]);
+      const near = makeRec(2, [2, 1, 0]);   // 2 units from the blast
+      const far = makeRec(3, [50, 1, 0]);   // well outside the radius
+      for (const r of [thrower, near, far]) { inst.byId.set(r.id, r); inst.players.set(r.ws, r); }
+
+      inst.detonate({ pos: [0, 1, 0], explodeAt: Date.now() - 1, shooterId: 1 });
+
+      expect(near.hp).toBeLessThan(MAX_HP);  // took falloff damage
+      expect(near.hp).toBeGreaterThan(0);    // 2/9 of the radius → partial damage, survives
+      expect(far.hp).toBe(MAX_HP);           // out of range, untouched
+    });
+  });
+
+  it("a self-grenade kill does not credit a frag", async () => {
+    const stub = env.ROOMS.getByName("nade-self");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & { detonate: (g: unknown) => void };
+      inst.broadcast = () => {};
+      const me = makeRec(1, [0, 1, 0], { hp: 30 });
+      inst.byId.set(1, me);
+      inst.players.set(me.ws, me);
+      inst.detonate({ pos: [0, 1, 0], explodeAt: Date.now() - 1, shooterId: 1 });
+      expect(me.st).toBe(ST_DEAD);
+      expect(me.deaths).toBe(1);
+      expect(me.frags).toBe(0); // no frag for blowing yourself up
     });
   });
 });

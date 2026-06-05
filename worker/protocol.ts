@@ -23,6 +23,14 @@ export const MOVE_BUDGET_SEC = 0.2;                       // anti-teleport token
 export const MATCH_DURATION_MS = 300_000;                 // 5-minute matches
 export const FRAG_LIMIT = 25;                             // match also ends at this many frags
 
+// --- Grenade (throwable AoE) ---
+export const GRENADE_SPEED = 26;          // initial throw speed (units/sec)
+export const GRENADE_GRAVITY = 22;        // downward accel on the thrown arc (units/sec^2)
+export const GRENADE_FUSE_MS = 1500;      // detonates this long after the throw (or on ground)
+export const GRENADE_RADIUS = 9;          // blast radius (units)
+export const GRENADE_DAMAGE = 120;        // damage at the center; linear falloff to 0 at the edge
+export const GRENADE_COOLDOWN_MS = 4000;  // per-player throw cooldown
+
 export type Vec3 = [number, number, number];
 export type Rot = [number, number];                       // [yaw, pitch] in radians
 
@@ -56,7 +64,8 @@ export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; 
 export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; }
 export interface ReadyMsg { t: "ready"; ready: boolean; }
 export interface ReloadMsg { t: "reload"; w: number; }
-export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg;
+export interface ThrowMsg { t: "throw"; o: Vec3; d: Vec3; } // throw a grenade: origin + aim direction
+export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg;
 
 // ---- Server -> Client ----
 export interface PlayerSnap {
@@ -73,7 +82,8 @@ export interface MatchStartMsg { t: "matchstart"; endsAt: number; fragLimit: num
 export interface MatchOverMsg  { t: "matchover";  standings: Standing[]; }
 export interface LobbyPlayer { id: number; name: string; ready: boolean; }
 export interface LobbyMsg { t: "lobby"; players: LobbyPlayer[]; matchActive: boolean; }
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg;
+export interface GrenadeMsg { t: "grenade"; o: Vec3; v: Vec3; fuseMs: number; } // render the thrown arc + detonation
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg;
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }
 export function decode<T>(raw: string): T | null { try { return JSON.parse(raw) as T; } catch { return null; } }

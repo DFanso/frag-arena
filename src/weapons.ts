@@ -2,7 +2,7 @@
 // switching (1/2), reload (R / auto), and aim-down-sights (right mouse → FOV zoom + scope).
 // Ammo is client-predicted for instant HUD feedback; the server enforces it authoritatively.
 import * as THREE from "three";
-import { WEAPONS, type ShootMsg, type ReloadMsg } from "../worker/protocol";
+import { WEAPONS, GRENADE_COOLDOWN_MS, type ShootMsg, type ReloadMsg, type ThrowMsg } from "../worker/protocol";
 import { fireRay } from "./combat";
 
 export interface WeaponDeps {
@@ -11,7 +11,7 @@ export interface WeaponDeps {
   getTargets: () => THREE.Object3D[];
   isLocked: () => boolean;
   nextSeq: () => number;
-  send: (m: ShootMsg | ReloadMsg) => void;
+  send: (m: ShootMsg | ReloadMsg | ThrowMsg) => void;
   baseFov: number;
   onLocalShoot: (hit: boolean) => void;
   onAmmo: (clip: number, reserve: number, reloading: boolean) => void;
@@ -27,6 +27,7 @@ export class WeaponController {
   private reloading: boolean[] = WEAPONS.map(() => false);
   private timers: Array<ReturnType<typeof setTimeout> | undefined> = WEAPONS.map(() => undefined);
   private ads = false;
+  private lastThrow = 0;
 
   private readonly onMouseDown: (e: MouseEvent) => void;
   private readonly onMouseUp: (e: MouseEvent) => void;
@@ -46,6 +47,7 @@ export class WeaponController {
       if (e.code === "KeyR") this.startReload(this.cur);
       else if (e.code === "Digit1") this.switchTo(0);
       else if (e.code === "Digit2") this.switchTo(1);
+      else if (e.code === "KeyG") this.throwGrenade();
     };
     this.onCtx = (e) => e.preventDefault();
     this.onLock = () => { if (!d.isLocked()) this.setADS(false); };
@@ -107,6 +109,15 @@ export class WeaponController {
     this.d.onScope(on && WEAPONS[this.cur]!.scoped);
   }
 
+  private throwGrenade(): void {
+    const now = Date.now();
+    if (now - this.lastThrow < GRENADE_COOLDOWN_MS) return;
+    this.lastThrow = now;
+    const o = this.d.camera.getWorldPosition(new THREE.Vector3());
+    const dir = this.d.camera.getWorldDirection(new THREE.Vector3());
+    this.d.send({ t: "throw", o: [o.x, o.y, o.z], d: [dir.x, dir.y, dir.z] });
+  }
+
   switchTo(id: number): void {
     if (id < 0 || id >= WEAPONS.length || id === this.cur) return;
     this.cur = id;
@@ -127,6 +138,7 @@ export class WeaponController {
     }
     this.cur = 0;
     this.ads = false;
+    this.lastThrow = 0;
     this.applyFov();
     this.d.onScope(false);
     this.d.onWeapon(WEAPONS[0]!.name, 0);
