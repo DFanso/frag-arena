@@ -20,6 +20,7 @@ import {
   MAX_MESSAGE_BYTES,
   RATE_LIMIT_MSGS_PER_SEC,
   FRAG_LIMIT,
+  AMMO_PICKUPS,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -591,6 +592,33 @@ describe("GameRoom ammo / reload", () => {
       expect(rec.ammo[0]).toBe(w.clipSize);
       expect(rec.reserveAmmo[0]).toBe(50 - (w.clipSize - 5));
       expect(rec.reloadEndsAt[0]).toBe(0);
+    });
+  });
+});
+
+// ---- ammo pickups ----
+describe("GameRoom ammo pickups", () => {
+  it("refills reserve when a player stands on an available crate, then puts it on cooldown", async () => {
+    const stub = env.ROOMS.getByName("pickup-refill");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & { matchActive: boolean; pickupAvail: number[]; loopTick: () => void };
+      inst.broadcast = () => {};
+      inst.matchActive = true;
+      const crate = AMMO_PICKUPS[0]!;
+      const rec = makeRec(1, [crate[0], 1, crate[2]]); // standing on crate 0
+      rec.reserveAmmo[0] = 0;
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+
+      inst.loopTick();
+
+      expect(rec.reserveAmmo[0]).toBe(WEAPONS[0]!.reserveAmmo); // refilled to max
+      expect(inst.pickupAvail[0]).toBeGreaterThan(0);           // crate now on cooldown
+
+      // a second pass while on cooldown does not refill again
+      rec.reserveAmmo[0] = 5;
+      inst.loopTick();
+      expect(rec.reserveAmmo[0]).toBe(5);
     });
   });
 });

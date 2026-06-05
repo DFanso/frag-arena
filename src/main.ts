@@ -23,6 +23,7 @@ import type {
   LobbyMsg,
   LobbyPlayer,
   GrenadeMsg,
+  PickupMsg,
 } from "../worker/protocol";
 import { Net } from "./net";
 import { buildArena } from "./map";
@@ -31,6 +32,7 @@ import { FpsControls } from "./controls";
 import { LocalPlayer, RemotePlayer } from "./player";
 import { WeaponController } from "./weapons";
 import { Grenades } from "./projectiles";
+import { AmmoPickups } from "./pickups";
 import { Hud } from "./hud";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
@@ -283,6 +285,9 @@ async function main(): Promise<void> {
   // Thrown-grenade visuals + explosion FX (damage is server-authoritative via HitMsg).
   const grenades = new Grenades(scene, reg.grenade, () => sfx.explosion());
 
+  // Ammo crate pickups (server-authoritative refill; this renders + animates the crates).
+  const pickups = new AmmoPickups(scene);
+
   // Death state tracking.
   let deadUntil = 0;
 
@@ -418,6 +423,12 @@ async function main(): Promise<void> {
     grenades.spawn(m.o, m.v, m.fuseMs);
   });
 
+  net.on("pickup", (m: PickupMsg) => {
+    pickups.setAvailable(m.id, false);
+    setTimeout(() => pickups.setAvailable(m.id, true), Math.max(0, m.availableAt - Date.now()));
+    if (m.by === myId) { shootHandle?.refillReserve(); sfx.pickup(); }
+  });
+
   net.on("matchstart", (m: MatchStartMsg) => {
     matchEndsAt = m.endsAt;
     phase = "match";
@@ -425,6 +436,7 @@ async function main(): Promise<void> {
     hud.hideResults();
     hud.hideDeath();
     deadUntil = 0;
+    pickups.showAll();
   });
 
   net.on("matchover", (m: MatchOverMsg) => {
@@ -507,6 +519,7 @@ async function main(): Promise<void> {
     const nowEpoch = Date.now();
     for (const rp of remotes.values()) rp.update(nowEpoch, dtMs);
     grenades.update(dt);
+    pickups.update(dt, nowEpoch);
 
     // Update viewmodel (recoil ease + muzzle flash).
     viewmodel.update(dtMs);

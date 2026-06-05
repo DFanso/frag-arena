@@ -41,6 +41,10 @@ export class Sfx {
     this.blip("sawtooth", 200, 36, 0.4, 0.38);
   }
 
+  pickup(): void {
+    this.blip("square", 520, 920, 0.14, 0.05);
+  }
+
   /**
    * Play one short tone: oscillator sweeping freqStart -> freqEnd over `dur` seconds,
    * with a quick gain envelope so it sounds like a blip and never clicks.

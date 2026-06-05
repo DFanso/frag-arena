@@ -24,6 +24,14 @@ export const MOVE_BUDGET_SEC = 0.2;                       // anti-teleport token
 export const MATCH_DURATION_MS = 300_000;                 // 5-minute matches
 export const FRAG_LIMIT = 25;                             // match also ends at this many frags
 
+// --- Ammo pickups (refill reserve by walking over a crate) ---
+export const PICKUP_RADIUS = 2.6;          // pick up within this XZ distance
+export const PICKUP_RESPAWN_MS = 15000;    // a used crate returns after this long
+export const AMMO_PICKUPS: readonly Vec3[] = [
+  [24, 0, 24], [-24, 0, 24], [24, 0, -24], [-24, 0, -24],
+  [0, 0, 52], [0, 0, -52], [52, 0, 0], [-52, 0, 0],
+];
+
 // --- Grenade (throwable AoE) ---
 export const GRENADE_SPEED = 26;          // initial throw speed (units/sec)
 export const GRENADE_GRAVITY = 22;        // downward accel on the thrown arc (units/sec^2)
@@ -84,7 +92,8 @@ export interface MatchOverMsg  { t: "matchover";  standings: Standing[]; }
 export interface LobbyPlayer { id: number; name: string; ready: boolean; }
 export interface LobbyMsg { t: "lobby"; players: LobbyPlayer[]; matchActive: boolean; }
 export interface GrenadeMsg { t: "grenade"; o: Vec3; v: Vec3; fuseMs: number; } // render the thrown arc + detonation
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg;
+export interface PickupMsg { t: "pickup"; id: number; by: number; availableAt: number; } // ammo crate taken
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg;
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }
 export function decode<T>(raw: string): T | null { try { return JSON.parse(raw) as T; } catch { return null; } }

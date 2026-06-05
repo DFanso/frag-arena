@@ -127,6 +127,12 @@ export class WeaponController {
     this.emit();
   }
 
+  // Refill every weapon's reserve to max (ammo crate pickup). Keeps the current magazine.
+  refillReserve(): void {
+    for (let w = 0; w < WEAPONS.length; w++) this.reserve[w] = WEAPONS[w]!.reserveAmmo;
+    this.emit();
+  }
+
   // Refill every weapon and reset to the rifle (called on (re)spawn).
   reset(): void {
     for (let w = 0; w < WEAPONS.length; w++) {

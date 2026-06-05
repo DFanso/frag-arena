@@ -26,6 +26,9 @@ import {
   GRENADE_RADIUS,
   GRENADE_DAMAGE,
   GRENADE_COOLDOWN_MS,
+  AMMO_PICKUPS,
+  PICKUP_RADIUS,
+  PICKUP_RESPAWN_MS,
   decode,
   encode,
   sanitizeName,
@@ -51,6 +54,7 @@ import type {
   LobbyPlayer,
   ThrowMsg,
   GrenadeMsg,
+  PickupMsg,
 } from "./protocol";
 import { validateShoot, chooseSpawn } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
@@ -95,6 +99,7 @@ export class GameRoom extends DurableObject<Env> {
   private matchEndsAt = 0;     // server epoch ms the current match ends (0 = no active match)
   private matchActive = false; // a match is currently running (vs lobby / ready-up phase)
   private grenades: ActiveGrenade[] = []; // thrown grenades awaiting detonation
+  private pickupAvail: number[] = AMMO_PICKUPS.map(() => 0); // epoch ms each ammo crate is available again
 
   async fetch(req: Request): Promise<Response> {
     if (req.headers.get("Upgrade") !== "websocket") {
@@ -225,6 +230,7 @@ export class GameRoom extends DurableObject<Env> {
     const now = Date.now();
     this.matchActive = true;
     this.matchEndsAt = now + MATCH_DURATION_MS;
+    this.pickupAvail = AMMO_PICKUPS.map(() => 0); // all ammo crates available at match start
     for (const rec of this.players.values()) {
       rec.frags = 0;
       rec.deaths = 0;
@@ -547,6 +553,24 @@ export class GameRoom extends DurableObject<Env> {
         else remaining.push(gr);
       }
       this.grenades = remaining;
+    }
+
+    // Ammo pickups: refill reserve when a player walks over an available crate.
+    for (let i = 0; i < AMMO_PICKUPS.length; i++) {
+      if (now < this.pickupAvail[i]!) continue;
+      const c = AMMO_PICKUPS[i]!;
+      for (const rec of this.players.values()) {
+        if (!rec.inMatch || rec.st === ST_DEAD) continue;
+        const dx = rec.p[0] - c[0], dz = rec.p[2] - c[2];
+        if (dx * dx + dz * dz > PICKUP_RADIUS * PICKUP_RADIUS) continue;
+        let needed = false;
+        for (let w = 0; w < WEAPONS.length; w++) if (rec.reserveAmmo[w]! < WEAPONS[w]!.reserveAmmo) { needed = true; break; }
+        if (!needed) continue; // don't waste the crate when already topped up
+        for (let w = 0; w < WEAPONS.length; w++) rec.reserveAmmo[w] = WEAPONS[w]!.reserveAmmo;
+        this.pickupAvail[i] = now + PICKUP_RESPAWN_MS;
+        this.broadcast({ t: "pickup", id: i, by: rec.id, availableAt: this.pickupAvail[i]! } satisfies PickupMsg);
+        break; // one taker per crate per tick
+      }
     }
 
     // 2.5) Match end check (time expired or someone reached the frag limit).
