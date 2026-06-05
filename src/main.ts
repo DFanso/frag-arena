@@ -24,6 +24,7 @@ import type {
   LobbyPlayer,
   GrenadeMsg,
   PickupMsg,
+  BarrelMsg,
 } from "../worker/protocol";
 import { Net } from "./net";
 import { buildArena } from "./map";
@@ -33,6 +34,7 @@ import { LocalPlayer, RemotePlayer } from "./player";
 import { WeaponController } from "./weapons";
 import { Grenades } from "./projectiles";
 import { AmmoPickups } from "./pickups";
+import { Barrels } from "./barrels";
 import { Hud } from "./hud";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
@@ -288,6 +290,9 @@ async function main(): Promise<void> {
   // Ammo crate pickups (server-authoritative refill; this renders + animates the crates).
   const pickups = new AmmoPickups(scene);
 
+  // Explosive barrels (shoot to detonate; server validates + applies AoE).
+  const barrels = new Barrels(scene, reg.barrel);
+
   // Death state tracking.
   let deadUntil = 0;
 
@@ -429,6 +434,12 @@ async function main(): Promise<void> {
     if (m.by === myId) { shootHandle?.refillReserve(); sfx.pickup(); }
   });
 
+  net.on("barrel", (m: BarrelMsg) => {
+    barrels.setAvailable(m.id, false);
+    grenades.blast(m.pos); // explosion FX + sound at the barrel
+    setTimeout(() => barrels.setAvailable(m.id, true), Math.max(0, m.respawnAt - Date.now()));
+  });
+
   net.on("matchstart", (m: MatchStartMsg) => {
     matchEndsAt = m.endsAt;
     phase = "match";
@@ -437,6 +448,7 @@ async function main(): Promise<void> {
     hud.hideDeath();
     deadUntil = 0;
     pickups.showAll();
+    barrels.showAll();
   });
 
   net.on("matchover", (m: MatchOverMsg) => {
@@ -455,7 +467,7 @@ async function main(): Promise<void> {
   shootHandle = new WeaponController({
     camera,
     dom: renderer.domElement,
-    getTargets: () => [...remotes.values()].map((rp) => rp.body),
+    getTargets: () => [...[...remotes.values()].map((rp) => rp.body), ...barrels.getTargets()],
     isLocked: () => controls.isLocked,
     nextSeq: () => (local ? local.nextSeq() : 0),
     send: (m) => net.send(m),

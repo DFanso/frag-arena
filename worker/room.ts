@@ -29,6 +29,12 @@ import {
   AMMO_PICKUPS,
   PICKUP_RADIUS,
   PICKUP_RESPAWN_MS,
+  EXPLOSIVE_BARRELS,
+  BARREL_HP,
+  BARREL_RADIUS,
+  BARREL_DAMAGE,
+  BARREL_RESPAWN_MS,
+  BARREL_HIT_RADIUS,
   decode,
   encode,
   sanitizeName,
@@ -55,6 +61,8 @@ import type {
   ThrowMsg,
   GrenadeMsg,
   PickupMsg,
+  BarrelMsg,
+  Weapon,
 } from "./protocol";
 import { validateShoot, chooseSpawn } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
@@ -100,6 +108,8 @@ export class GameRoom extends DurableObject<Env> {
   private matchActive = false; // a match is currently running (vs lobby / ready-up phase)
   private grenades: ActiveGrenade[] = []; // thrown grenades awaiting detonation
   private pickupAvail: number[] = AMMO_PICKUPS.map(() => 0); // epoch ms each ammo crate is available again
+  private barrelHp: number[] = EXPLOSIVE_BARRELS.map(() => BARREL_HP); // explosive-barrel health
+  private barrelDownUntil: number[] = EXPLOSIVE_BARRELS.map(() => 0);  // epoch ms each barrel respawns (0 = alive)
 
   async fetch(req: Request): Promise<Response> {
     if (req.headers.get("Upgrade") !== "websocket") {
@@ -231,6 +241,8 @@ export class GameRoom extends DurableObject<Env> {
     this.matchActive = true;
     this.matchEndsAt = now + MATCH_DURATION_MS;
     this.pickupAvail = AMMO_PICKUPS.map(() => 0); // all ammo crates available at match start
+    this.barrelHp = EXPLOSIVE_BARRELS.map(() => BARREL_HP); // restore all barrels
+    this.barrelDownUntil = EXPLOSIVE_BARRELS.map(() => 0);
     for (const rec of this.players.values()) {
       rec.frags = 0;
       rec.deaths = 0;
@@ -405,6 +417,12 @@ export class GameRoom extends DurableObject<Env> {
     rec.lastShotAt = now;
     rec.ammo[w]! -= 1;
 
+    // Shot an explosive barrel? (validated against the barrel, not a player.)
+    if (m.barrel != null) {
+      this.handleBarrelHit(rec, m, m.barrel, weapon, now);
+      return;
+    }
+
     // Fired, but the claimed hit was not valid (no/dead/protected target, range, aim).
     if (reject !== null || target === null) return;
 
@@ -459,16 +477,36 @@ export class GameRoom extends DurableObject<Env> {
     this.broadcast(gm);
   }
 
-  // Detonate a grenade: AoE damage with linear falloff to everyone alive in the blast radius.
-  private detonate(gr: ActiveGrenade): void {
-    const killer = this.byId.get(gr.shooterId);
+  // AoE damage with linear falloff to everyone alive in the blast radius (grenades + barrels).
+  private detonate(pos: Vec3, shooterId: number, radius: number, damage: number): void {
+    const killer = this.byId.get(shooterId);
     for (const v of this.players.values()) {
       if (!v.inMatch || v.st === ST_DEAD || v.st === ST_PROTECTED) continue;
-      const dx = v.p[0] - gr.pos[0], dy = v.p[1] - gr.pos[1], dz = v.p[2] - gr.pos[2];
+      const dx = v.p[0] - pos[0], dy = v.p[1] - pos[1], dz = v.p[2] - pos[2];
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (dist > GRENADE_RADIUS) continue;
-      this.applyDamage(v, GRENADE_DAMAGE * (1 - dist / GRENADE_RADIUS), killer ?? v, false);
+      if (dist > radius) continue;
+      this.applyDamage(v, damage * (1 - dist / radius), killer ?? v, false);
     }
+  }
+
+  // Handle a claimed explosive-barrel hit: validate the ray, damage it, detonate at 0 HP.
+  private handleBarrelHit(rec: PlayerRec, m: ShootMsg, b: number, weapon: Weapon, now: number): void {
+    if (b < 0 || b >= EXPLOSIVE_BARRELS.length) return;
+    if (now < this.barrelDownUntil[b]! || this.barrelHp[b]! <= 0) return; // already destroyed
+    const bp = EXPLOSIVE_BARRELS[b]!;
+    const cy = bp[1] + 1; // barrel centre ~1 unit up
+    const ox = bp[0] - m.o[0], oy = cy - m.o[1], oz = bp[2] - m.o[2];
+    const t = ox * m.d[0] + oy * m.d[1] + oz * m.d[2]; // project onto the (normalized) aim ray
+    if (t <= 0) return; // barrel is behind the shooter
+    const px = m.o[0] + m.d[0] * t, py = m.o[1] + m.d[1] * t, pz = m.o[2] + m.d[2] * t;
+    if (Math.hypot(px - bp[0], py - cy, pz - bp[2]) > BARREL_HIT_RADIUS) return; // aim missed the barrel
+    this.barrelHp[b]! -= weapon.damage;
+    if (this.barrelHp[b]! > 0) return;
+    this.barrelHp[b] = 0;
+    this.barrelDownUntil[b] = now + BARREL_RESPAWN_MS;
+    const center: Vec3 = [bp[0], cy, bp[2]];
+    this.detonate(center, rec.id, BARREL_RADIUS, BARREL_DAMAGE);
+    this.broadcast({ t: "barrel", id: b, pos: center, respawnAt: this.barrelDownUntil[b]! } satisfies BarrelMsg);
   }
 
   // Apply damage, broadcast a hit, and handle death/respawn/scoring (T7).
@@ -549,7 +587,7 @@ export class GameRoom extends DurableObject<Env> {
     if (this.grenades.length) {
       const remaining: ActiveGrenade[] = [];
       for (const gr of this.grenades) {
-        if (now >= gr.explodeAt) this.detonate(gr);
+        if (now >= gr.explodeAt) this.detonate(gr.pos, gr.shooterId, GRENADE_RADIUS, GRENADE_DAMAGE);
         else remaining.push(gr);
       }
       this.grenades = remaining;
@@ -570,6 +608,14 @@ export class GameRoom extends DurableObject<Env> {
         this.pickupAvail[i] = now + PICKUP_RESPAWN_MS;
         this.broadcast({ t: "pickup", id: i, by: rec.id, availableAt: this.pickupAvail[i]! } satisfies PickupMsg);
         break; // one taker per crate per tick
+      }
+    }
+
+    // Respawn destroyed barrels (client re-shows them via its own timer).
+    for (let b = 0; b < EXPLOSIVE_BARRELS.length; b++) {
+      if (this.barrelDownUntil[b]! !== 0 && now >= this.barrelDownUntil[b]!) {
+        this.barrelHp[b] = BARREL_HP;
+        this.barrelDownUntil[b] = 0;
       }
     }
 

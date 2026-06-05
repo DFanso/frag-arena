@@ -40,6 +40,17 @@ export const GRENADE_RADIUS = 9;          // blast radius (units)
 export const GRENADE_DAMAGE = 120;        // damage at the center; linear falloff to 0 at the edge
 export const GRENADE_COOLDOWN_MS = 4000;  // per-player throw cooldown
 
+// --- Explosive barrels (shoot to detonate; AoE damages nearby players) ---
+export const BARREL_HP = 50;            // ~2 rifle shots or 1 sniper shot
+export const BARREL_RADIUS = 7;         // blast radius
+export const BARREL_DAMAGE = 90;        // damage at the center; linear falloff
+export const BARREL_RESPAWN_MS = 20000; // a detonated barrel returns after this long
+export const BARREL_HIT_RADIUS = 1.8;   // server accepts a shot whose ray passes within this of the barrel
+export const EXPLOSIVE_BARRELS: readonly Vec3[] = [
+  [30, 0, 8], [-30, 0, -8], [8, 0, 30], [-8, 0, -30],
+  [36, 0, 36], [-36, 0, 36], [36, 0, -36], [-36, 0, -36],
+];
+
 export type Vec3 = [number, number, number];
 export type Rot = [number, number];                       // [yaw, pitch] in radians
 
@@ -70,7 +81,7 @@ export const SPAWN_POINTS: readonly Vec3[] = [
 
 // ---- Client -> Server ----
 export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; c?: boolean; }
-export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; }
+export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; barrel?: number | null; }
 export interface ReadyMsg { t: "ready"; ready: boolean; }
 export interface ReloadMsg { t: "reload"; w: number; }
 export interface ThrowMsg { t: "throw"; o: Vec3; d: Vec3; } // throw a grenade: origin + aim direction
@@ -93,7 +104,8 @@ export interface LobbyPlayer { id: number; name: string; ready: boolean; }
 export interface LobbyMsg { t: "lobby"; players: LobbyPlayer[]; matchActive: boolean; }
 export interface GrenadeMsg { t: "grenade"; o: Vec3; v: Vec3; fuseMs: number; } // render the thrown arc + detonation
 export interface PickupMsg { t: "pickup"; id: number; by: number; availableAt: number; } // ammo crate taken
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg;
+export interface BarrelMsg { t: "barrel"; id: number; pos: Vec3; respawnAt: number; } // barrel detonated
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg;
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }
 export function decode<T>(raw: string): T | null { try { return JSON.parse(raw) as T; } catch { return null; } }

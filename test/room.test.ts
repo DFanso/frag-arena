@@ -21,6 +21,9 @@ import {
   RATE_LIMIT_MSGS_PER_SEC,
   FRAG_LIMIT,
   AMMO_PICKUPS,
+  GRENADE_RADIUS,
+  GRENADE_DAMAGE,
+  EXPLOSIVE_BARRELS,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -628,14 +631,14 @@ describe("GameRoom grenade", () => {
   it("detonates with linear-falloff AoE damage to players in the blast radius", async () => {
     const stub = env.ROOMS.getByName("nade-aoe");
     await runInDurableObject(stub, async (instance: GameRoom) => {
-      const inst = instance as unknown as RoomInternals & { grenades: unknown[]; detonate: (g: unknown) => void };
+      const inst = instance as unknown as RoomInternals & { detonate: (pos: number[], shooterId: number, radius: number, damage: number) => void };
       inst.broadcast = () => {};
       const thrower = makeRec(1, [0, 1, 0]);
       const near = makeRec(2, [2, 1, 0]);   // 2 units from the blast
       const far = makeRec(3, [50, 1, 0]);   // well outside the radius
       for (const r of [thrower, near, far]) { inst.byId.set(r.id, r); inst.players.set(r.ws, r); }
 
-      inst.detonate({ pos: [0, 1, 0], explodeAt: Date.now() - 1, shooterId: 1 });
+      inst.detonate([0, 1, 0], 1, GRENADE_RADIUS, GRENADE_DAMAGE);
 
       expect(near.hp).toBeLessThan(MAX_HP);  // took falloff damage
       expect(near.hp).toBeGreaterThan(0);    // 2/9 of the radius → partial damage, survives
@@ -646,15 +649,61 @@ describe("GameRoom grenade", () => {
   it("a self-grenade kill does not credit a frag", async () => {
     const stub = env.ROOMS.getByName("nade-self");
     await runInDurableObject(stub, async (instance: GameRoom) => {
-      const inst = instance as unknown as RoomInternals & { detonate: (g: unknown) => void };
+      const inst = instance as unknown as RoomInternals & { detonate: (pos: number[], shooterId: number, radius: number, damage: number) => void };
       inst.broadcast = () => {};
       const me = makeRec(1, [0, 1, 0], { hp: 30 });
       inst.byId.set(1, me);
       inst.players.set(me.ws, me);
-      inst.detonate({ pos: [0, 1, 0], explodeAt: Date.now() - 1, shooterId: 1 });
+      inst.detonate([0, 1, 0], 1, GRENADE_RADIUS, GRENADE_DAMAGE);
       expect(me.st).toBe(ST_DEAD);
       expect(me.deaths).toBe(1);
       expect(me.frags).toBe(0); // no frag for blowing yourself up
+    });
+  });
+});
+
+// ---- explosive barrels ----
+describe("GameRoom explosive barrel", () => {
+  it("detonates when shot and AoE-damages nearby players", async () => {
+    const stub = env.ROOMS.getByName("barrel-aoe");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        handleBarrelHit: (rec: ReturnType<typeof makeRec>, m: unknown, b: number, weapon: unknown, now: number) => void;
+        barrelHp: number[]; barrelDownUntil: number[];
+      };
+      inst.broadcast = () => {};
+      const bp = EXPLOSIVE_BARRELS[0]!;
+      const shooter = makeRec(1, [bp[0], 1, bp[2] + 5]);
+      const victim = makeRec(2, [bp[0] + 2, 1, bp[2]]); // 2 units from the barrel
+      inst.byId.set(1, shooter); inst.byId.set(2, victim);
+      inst.players.set(shooter.ws, shooter); inst.players.set(victim.ws, victim);
+      const now = Date.now();
+      const m = { t: "shoot", o: [bp[0], 1, bp[2] + 5], d: [0, 0, -1], w: 1, hit: null, head: false, barrel: 0, seq: 1, ts: now };
+
+      inst.handleBarrelHit(shooter, m, 0, WEAPONS[1]!, now); // sniper (90 dmg) one-shots a 50-HP barrel
+
+      expect(inst.barrelHp[0]).toBe(0);                      // destroyed
+      expect(inst.barrelDownUntil[0]).toBeGreaterThan(now);  // respawning later
+      expect(victim.hp).toBeLessThan(MAX_HP);                // took blast AoE
+    });
+  });
+
+  it("ignores a barrel claim whose aim ray misses the barrel", async () => {
+    const stub = env.ROOMS.getByName("barrel-miss");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        handleBarrelHit: (rec: ReturnType<typeof makeRec>, m: unknown, b: number, weapon: unknown, now: number) => void;
+        barrelHp: number[];
+      };
+      inst.broadcast = () => {};
+      const bp = EXPLOSIVE_BARRELS[0]!;
+      const shooter = makeRec(1, [bp[0], 1, bp[2] + 5]);
+      inst.byId.set(1, shooter); inst.players.set(shooter.ws, shooter);
+      const before = inst.barrelHp[0];
+      // aim 90° away from the barrel
+      const m = { t: "shoot", o: [bp[0], 1, bp[2] + 5], d: [1, 0, 0], w: 1, hit: null, head: false, barrel: 0, seq: 1, ts: Date.now() };
+      inst.handleBarrelHit(shooter, m, 0, WEAPONS[1]!, Date.now());
+      expect(inst.barrelHp[0]).toBe(before); // unchanged — the claim was rejected
     });
   });
 });

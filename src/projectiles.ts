@@ -73,6 +73,11 @@ export class Grenades {
     });
   }
 
+  // Trigger an explosion FX at a position (used by exploding barrels).
+  blast(p: Vec3): void {
+    this.boom(p);
+  }
+
   private boom(p: Vec3): void {
     const mat = new THREE.MeshBasicMaterial({ color: 0xffa733, transparent: true, opacity: 0.6, depthWrite: false });
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), mat);

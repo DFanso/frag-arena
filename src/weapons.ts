@@ -92,7 +92,7 @@ export class WeaponController {
     this.clip[w]! -= 1;
     this.emit();
     const res = fireRay(this.d.camera, this.d.getTargets());
-    this.d.send({ t: "shoot", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, w, hit: res.hit, head: res.head });
+    this.d.send({ t: "shoot", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, w, hit: res.hit, head: res.head, barrel: res.barrel });
     this.d.onLocalShoot(res.hit !== null);
     if (this.clip[w]! <= 0) this.startReload(w);
   }
