@@ -5,7 +5,7 @@ export const SERVER_TICK_MS = 1000 / SERVER_TICK_HZ;      // 50
 export const CLIENT_SEND_HZ = 15;
 export const CLIENT_SEND_MS = 1000 / CLIENT_SEND_HZ;      // ~66.67
 export const INTERP_DELAY_MS = 120;
-export const MAX_PLAYERS_PER_ROOM = 10;
+export const MAX_PLAYERS_PER_ROOM = 12;
 export const IDLE_TIMEOUT_MS = 30_000;
 export const MAX_MESSAGE_BYTES = 1024;                    // app-level cap (platform max is 32 MiB)
 export const RATE_LIMIT_MSGS_PER_SEC = 40;                // per connection
@@ -39,10 +39,12 @@ export const ST_PROTECTED = 3;                            // alive + spawn prote
 export type PlayerStateCode = typeof ST_DEAD | typeof ST_ALIVE | typeof ST_PROTECTED;
 
 // Server-assigned spawn points (ground positions; capsule end y = EYE_HEIGHT).
-// Spread around the 100x100 arena (radius ~38), clear of the central tower.
+// 12 points on a radius-~78 ring of the 180x180 arena (every 30°), clear of all buildings.
 export const SPAWN_POINTS: readonly Vec3[] = [
-  [-38, EYE_HEIGHT, -38], [38, EYE_HEIGHT, -38], [38, EYE_HEIGHT, 38], [-38, EYE_HEIGHT, 38],
-  [0, EYE_HEIGHT, -38], [0, EYE_HEIGHT, 38], [-38, EYE_HEIGHT, 0], [38, EYE_HEIGHT, 0],
+  [78, EYE_HEIGHT, 0], [67.5, EYE_HEIGHT, 39], [39, EYE_HEIGHT, 67.5],
+  [0, EYE_HEIGHT, 78], [-39, EYE_HEIGHT, 67.5], [-67.5, EYE_HEIGHT, 39],
+  [-78, EYE_HEIGHT, 0], [-67.5, EYE_HEIGHT, -39], [-39, EYE_HEIGHT, -67.5],
+  [0, EYE_HEIGHT, -78], [39, EYE_HEIGHT, -67.5], [67.5, EYE_HEIGHT, -39],
 ];
 
 // ---- Client -> Server ----

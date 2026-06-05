@@ -7,8 +7,8 @@ import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 
-const ARENA = 100;
-const HALF = ARENA / 2; // 50
+const ARENA = 180;       // much-bigger arena (was 100) — issues #3 / #4
+const HALF = ARENA / 2;  // 90
 const WALL_H = 8;
 const WALL_T = 1;
 
@@ -32,27 +32,29 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
 
   const grassTex = reg.textures?.grass ?? null;
   const stoneTex = reg.textures?.stone ?? null;
-  if (grassTex) grassTex.repeat.set(25, 25);
+  if (grassTex) grassTex.repeat.set(45, 45);
   if (stoneTex) stoneTex.repeat.set(2, 2);
   const structMat = stoneTex ? new THREE.MeshStandardMaterial({ map: stoneTex, roughness: 1 }) : null;
 
-  const cbox = (w: number, h: number, d: number, x: number, y: number, z: number, rotX = 0): void => {
+  const cbox = (w: number, h: number, d: number, x: number, y: number, z: number, rotX = 0, rotZ = 0): void => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial());
     m.position.set(x, y, z);
     if (rotX) m.rotation.x = rotX;
+    if (rotZ) m.rotation.z = rotZ;
     collision.add(m);
   };
-  const vstruct = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, rotX = 0): void => {
+  const vstruct = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, rotX = 0, rotZ = 0): void => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), structMat ?? new THREE.MeshStandardMaterial({ color, roughness: 1 }));
     m.position.set(x, y, z);
     if (rotX) m.rotation.x = rotX;
+    if (rotZ) m.rotation.z = rotZ;
     m.castShadow = true;
     m.receiveShadow = true;
     visual.add(m);
   };
-  const solid = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, rotX = 0): void => {
-    vstruct(w, h, d, color, x, y, z, rotX);
-    cbox(w, h, d, x, y, z, rotX);
+  const solid = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, rotX = 0, rotZ = 0): void => {
+    vstruct(w, h, d, color, x, y, z, rotX, rotZ);
+    cbox(w, h, d, x, y, z, rotX, rotZ);
   };
   const collOnly = (w: number, h: number, d: number, x: number, y: number, z: number): void => {
     cbox(w, h, d, x, y, z);
@@ -140,57 +142,89 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
     vstruct(WALL_T, WALL_H, ARENA, 0x70808f, HALF, wy, 0);
   }
 
-  // --- Buildings: complete models, ENTERABLE (collision = real geometry via the Octree) ---
-  building(reg.bTower, 9, 0, 0, 0, { w: 8, h: 12, d: 8 }, 0x8a8a8a);        // central landmark
-  building(reg.bHouse1, 11, -22, -22, 0, { w: 9, h: 5, d: 9 }, 0x9a8a72);
-  building(reg.bHouse2, 11, 22, 22, Math.PI, { w: 9, h: 5, d: 9 }, 0x9a8a72);
-  building(reg.bShed, 7, 22, -22, Math.PI / 2, { w: 6, h: 3.5, d: 6 }, 0x8a7a5a);
-  building(reg.bShed2, 7, -22, 22, -Math.PI / 2, { w: 6, h: 3.5, d: 6 }, 0x8a7a5a);
+  // Occupancy tracker so scattered cover/foliage avoids buildings + platforms.
+  const occ: Array<{ x: number; z: number; r: number }> = [];
+  const note = (x: number, z: number, r: number): void => { occ.push({ x, z, r }); };
+  const clearSpot = (x: number, z: number, pad: number): boolean =>
+    Math.hypot(x, z) > 14 && Math.hypot(x, z) < 78 && occ.every((o) => Math.hypot(x - o.x, z - o.z) > o.r + pad);
 
-  // --- 2 climbable stone platforms (verticality) + ramps ---
+  // --- Buildings: complete models, ENTERABLE (collision = real geometry via the Octree).
+  //     Tower at center, an inner diagonal ring, and an outer cardinal ring. ---
+  const place = (m: GLTF | null | undefined, w: number, x: number, z: number, rot: number, fb: { w: number; h: number; d: number }, color: number): void => {
+    building(m, w, x, z, rot, fb, color);
+    note(x, z, w * 0.75);
+  };
+  place(reg.bTower, 11, 0, 0, 0, { w: 9, h: 12, d: 9 }, 0x8a8a8a);            // central landmark
+  place(reg.bHouse1, 13, -40, -40, 0, { w: 10, h: 5, d: 10 }, 0x9a8a72);     // inner diagonal ring
+  place(reg.bHouse2, 13, 40, 40, Math.PI, { w: 10, h: 5, d: 10 }, 0x9a8a72);
+  place(reg.bShed, 9, 40, -40, Math.PI / 2, { w: 7, h: 4, d: 7 }, 0x8a7a5a);
+  place(reg.bShed2, 9, -40, 40, -Math.PI / 2, { w: 7, h: 4, d: 7 }, 0x8a7a5a);
+  place(reg.bHouse2, 13, 0, -66, 0, { w: 10, h: 5, d: 10 }, 0x9a8a72);       // outer cardinal ring
+  place(reg.bHouse1, 13, 0, 66, Math.PI, { w: 10, h: 5, d: 10 }, 0x9a8a72);
+  place(reg.bShed, 9, -66, 0, Math.PI / 2, { w: 7, h: 4, d: 7 }, 0x8a7a5a);
+  place(reg.bShed2, 9, 66, 0, -Math.PI / 2, { w: 7, h: 4, d: 7 }, 0x8a7a5a);
+
+  // --- 4 climbable stone platforms (verticality) around the tower + axis-aware ramps ---
   const midH = 2.5;
   const rampColor = 0xaaaaaa;
   const rampAngle = Math.atan2(2.5, 10);
   const rampLen = Math.hypot(10, 2.5);
-  for (const [mx, mz] of [[0, 26], [0, -26]] as Array<[number, number]>) {
+  for (const [mx, mz] of [[28, 0], [-28, 0], [0, 28], [0, -28]] as Array<[number, number]>) {
     collOnly(10, midH, 10, mx, midH / 2, mz);
     vstruct(10, midH, 10, 0x6b6f62, mx, midH / 2, mz);
-    solid(5, 0.5, rampLen, rampColor, mx, midH / 2, mz + (mz > 0 ? -8 : 8), mz > 0 ? rampAngle : -rampAngle);
+    if (mz !== 0) {
+      // platform on the Z axis → ramp runs along Z (tilt about X)
+      solid(5, 0.5, rampLen, rampColor, mx, midH / 2, mz + (mz > 0 ? -8 : 8), mz > 0 ? rampAngle : -rampAngle, 0);
+    } else {
+      // platform on the X axis → ramp runs along X (tilt about Z)
+      solid(rampLen, 0.5, 5, rampColor, mx + (mx > 0 ? -8 : 8), midH / 2, mz, 0, mx > 0 ? -rampAngle : rampAngle);
+    }
+    note(mx, mz, 9);
   }
 
-  // --- Containers: mid cover ---
-  solidProp(reg.container, 9, 14, 0, 0, { w: 9, h: 5, d: 4 }, 0x995533);
-  solidProp(reg.container, 9, -14, 0, 0, { w: 9, h: 5, d: 4 }, 0x995533);
-
-  // --- Crates: low cover ---
-  for (const [x, z] of [[12, 12], [-12, -12], [12, -12], [-12, 12]] as Array<[number, number]>) {
-    solidProp(reg.crate, 4, x, z, 0, { w: 4, h: 3, d: 4 }, 0xb5651d);
+  // --- Big containers as chunky cover at clear mid-ring spots ---
+  for (const [x, z, rot] of [[24, -52, 0], [-24, 52, 0], [52, 24, Math.PI / 2], [-52, -24, Math.PI / 2]] as Array<[number, number, number]>) {
+    if (clearSpot(x, z, 3)) { solidProp(reg.container, 10, x, z, rot, { w: 10, h: 5, d: 4 }, 0x995533); note(x, z, 6); }
+  }
+  // --- Fallen logs (low cover) ---
+  for (const [x, z, rot] of [[-52, 24, 0], [52, -24, 0]] as Array<[number, number, number]>) {
+    if (clearSpot(x, z, 3)) { solidProp(reg.log, 6, x, z, rot, { w: 6, h: 1.4, d: 1.6 }, 0x6b4f2f); note(x, z, 4); }
   }
 
-  // --- Rocks + barrels + logs: scattered low cover ---
-  for (const [x, z] of [[36, 18], [-36, -18], [18, 36], [-18, -36]] as Array<[number, number]>) {
-    solidProp(reg.rock, 4, x, z, 0, { w: 4, h: 2.5, d: 4 }, 0x777777);
+  // --- Scattered low cover (crates / rocks / barrels), avoiding structures + spawn ring ---
+  const coverDefs = [
+    { m: reg.crate, w: 4, fb: { w: 4, h: 3, d: 4 }, c: 0xb5651d },
+    { m: reg.rock, w: 4.5, fb: { w: 4.5, h: 2.5, d: 4.5 }, c: 0x777777 },
+    { m: reg.barrel, w: 1.3, fb: { w: 1.3, h: 1.6, d: 1.3 }, c: 0xcc5533 },
+  ];
+  let ci = 0;
+  for (let gx = -72; gx <= 72; gx += 13) {
+    for (let gz = -72; gz <= 72; gz += 13) {
+      const x = gx + (Math.abs(gx * 7 + gz * 13) % 7) - 3;
+      const z = gz + (Math.abs(gx * 5 + gz * 11) % 7) - 3;
+      if (!clearSpot(x, z, 4)) continue;
+      const d = coverDefs[ci % coverDefs.length]!;
+      ci++;
+      solidProp(d.m, d.w, x, z, ((ci * 53) % 360) * (Math.PI / 180), d.fb, d.c);
+      note(x, z, 3);
+    }
   }
-  for (const [x, z] of [[6, 18], [-6, -18], [18, 6], [-18, -6]] as Array<[number, number]>) {
-    solidProp(reg.barrel, 1.2, x, z, 0, { w: 1.2, h: 1.6, d: 1.2 }, 0xcc5533);
-  }
-  solidProp(reg.log, 6, 38, -14, 0, { w: 6, h: 1.4, d: 1.6 }, 0x6b4f2f);
-  solidProp(reg.log, 6, -38, 14, 0, { w: 6, h: 1.4, d: 1.6 }, 0x6b4f2f);
 
-  // --- Trees (decorative corners) ---
-  for (const [x, z] of [[45, 45], [-45, 45], [45, -45], [-45, -45]] as Array<[number, number]>) {
-    deco(reg.tree, 6, x, z);
+  // --- Trees (decorative, corners + edge midpoints) ---
+  for (const [x, z] of [[82, 82], [-82, 82], [82, -82], [-82, -82], [82, 0], [-82, 0], [0, 82], [0, -82]] as Array<[number, number]>) {
+    deco(reg.tree, 7, x, z);
   }
 
-  // --- Scattered foliage (deco only) ---
+  // --- Scattered foliage (deco only; off building/platform footprints) ---
   const foliage = [reg.grass, reg.bush, reg.fern];
-  const sizes = [1.6, 2.6, 2.2];
+  const sizes = [1.7, 2.8, 2.3];
   let fi = 0;
-  for (let gx = -42; gx <= 42; gx += 11) {
-    for (let gz = -42; gz <= 42; gz += 11) {
-      const x = gx + (Math.abs(gx * 7 + gz * 13) % 5) - 2;
-      const z = gz + (Math.abs(gx * 11 + gz * 5) % 5) - 2;
+  for (let gx = -80; gx <= 80; gx += 12) {
+    for (let gz = -80; gz <= 80; gz += 12) {
+      const x = gx + (Math.abs(gx * 7 + gz * 13) % 6) - 3;
+      const z = gz + (Math.abs(gx * 11 + gz * 5) % 6) - 3;
       if (Math.hypot(x, z) < 10) continue;
+      if (!occ.every((o) => Math.hypot(x - o.x, z - o.z) > o.r + 1)) continue;
       const idx = fi % 3;
       deco(foliage[idx], sizes[idx]!, x, z, ((fi * 47) % 360) * (Math.PI / 180));
       fi++;
