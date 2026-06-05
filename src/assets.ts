@@ -41,7 +41,7 @@ export interface AssetRegistry {
 }
 
 const FILES: Record<GltfKey, string> = {
-  character: "/models/character_soldier.glb",
+  character: "/models/character_swat.glb",
   gun: "/models/gun.glb",
   crate: "/models/crate.glb",
   barrel: "/models/barrel.glb",

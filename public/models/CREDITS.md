@@ -5,7 +5,8 @@ Credit is given here voluntarily because these creators are great.
 
 | File | Model | Creator | License | Source |
 |------|-------|---------|---------|--------|
-| `character_soldier.glb` | Character Soldier (rigged + animated; bundled weapons hidden in-game) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/PpLF4rt4ah |
+| `character_swat.glb` | Character SWAT (rigged + animated; current player model) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/Btfn3G5Xv4 |
+| `character_soldier.glb` | Character Soldier (rigged + animated; no longer the active player model) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/PpLF4rt4ah |
 | `grenade.glb` | Grenade | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/xnuUzBTsUg |
 | `character.glb` | RobotExpressive (animated; no longer used as the player model) | Tomás Laulhé; mods by Don McCurdy | CC0 1.0 | three.js examples (`examples/models/gltf/RobotExpressive/`) |
 | `gun.glb` | Low-poly Rifle | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/cCAgiMOQow |

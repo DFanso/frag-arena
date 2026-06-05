@@ -277,9 +277,7 @@ async function main(): Promise<void> {
   const sfx = new Sfx();
   let local: LocalPlayer | undefined;
 
-  // First-person weapon viewmodel (attached to camera).
-  // #6 (first-person arms): the CC0 arms rig doesn't align to this gun without a viewmodel
-  // redesign / matched asset — deferred. Gun-only viewmodel for now (arms code-path dormant).
+  // First-person viewmodel: gun + procedural arms gripping it (#6).
   const viewmodel = new Viewmodel(camera, reg.gun);
 
   // Thrown-grenade visuals + explosion FX (damage is server-authoritative via HitMsg).
