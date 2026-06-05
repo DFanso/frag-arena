@@ -299,6 +299,7 @@ async function main(): Promise<void> {
   let matchEndsAt = 0;     // server epoch ms the match ends (0 = no active match)
   let latestSnapTs = 0;    // server clock from the latest snap (skew-free timer reference)
   let phase: "lobby" | "match" = "lobby"; // start in the ready-up lobby
+  let shootHandle: ReturnType<typeof wireShooting> | undefined; // ammo/reload owner
 
   function nameOf(id: number): string {
     return latestSnap.find((p) => p.id === id)?.name ?? "";
@@ -387,6 +388,7 @@ async function main(): Promise<void> {
       hud.setHealth(MAX_HP);
       hud.hideDeath();
       controls.setPosition(m.p);
+      shootHandle?.reset(); // refill magazine + reserve on (re)spawn
     } else {
       // A remote respawned: reappear at the spawn point (no slide from the death spot).
       const rp = remotes.get(m.id);
@@ -428,7 +430,7 @@ async function main(): Promise<void> {
 
   // ---- shooting (single owner: combat.wireShooting — D15) -------------------
 
-  wireShooting({
+  shootHandle = wireShooting({
     camera,
     dom: renderer.domElement,
     getTargets: () => [...remotes.values()].map((rp) => rp.body),
@@ -441,6 +443,9 @@ async function main(): Promise<void> {
       viewmodel.flash();
       if (hit) hud.flashHitMarker();
     },
+    onAmmo: (clip, reserve, reloading) => hud.setAmmo(clip, reserve, reloading),
+    onReload: () => { sfx.reload(); net.send({ t: "reload" }); },
+    onDryFire: () => sfx.dryFire(),
   });
 
   // ---- resize --------------------------------------------------------------

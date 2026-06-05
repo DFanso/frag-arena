@@ -36,6 +36,7 @@ export class Hud {
   private root: HTMLDivElement;
   private healthFill: HTMLDivElement;
   private healthText: HTMLSpanElement;
+  private ammoEl: HTMLDivElement;
   private prompt: HTMLDivElement;
   private hitMarker: HTMLDivElement;
   private scoreboard: HTMLDivElement;
@@ -95,6 +96,14 @@ export class Hud {
     root.appendChild(healthWrap);
     this.healthFill = fill;
     this.healthText = text;
+
+    // Ammo counter (bottom-right): "clip / reserve" or "RELOADING…".
+    const ammo = document.createElement("div");
+    ammo.style.cssText =
+      "position:absolute;right:24px;bottom:20px;color:#fff;font:700 24px monospace;" +
+      "text-shadow:0 2px 4px #000;text-align:right;";
+    root.appendChild(ammo);
+    this.ammoEl = ammo;
 
     // "Click to play" prompt (centered overlay).
     const prompt = document.createElement("div");
@@ -163,6 +172,18 @@ export class Hud {
   /** Tell the HUD which player id is the local player (highlighted in scoreboard). */
   setMyId(id: number): void {
     this.myId = id;
+  }
+
+  /** Update the ammo counter (magazine / reserve), or show a reloading state. */
+  setAmmo(clip: number, reserve: number, reloading: boolean): void {
+    if (reloading) {
+      this.ammoEl.innerHTML = '<span style="font-size:16px;color:#ffcc66">RELOADING…</span>';
+      return;
+    }
+    const color = clip === 0 ? "#ee4444" : clip <= 5 ? "#ffcc66" : "#ffffff";
+    this.ammoEl.innerHTML =
+      `<span style="color:${color}">${clip}</span>` +
+      `<span style="font-size:15px;opacity:.7"> / ${reserve}</span>`;
   }
 
   /** Update the health bar from the local player's hp (0..MAX_HP). */

@@ -28,9 +28,10 @@ export type Rot = [number, number];                       // [yaw, pitch] in rad
 
 export interface Weapon {
   id: number; name: string; damage: number; headMult: number; maxRange: number; cooldownMs: number;
+  clipSize: number; reserveAmmo: number; reloadMs: number;
 }
 export const WEAPONS: readonly Weapon[] = [
-  { id: 0, name: "rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120 },
+  { id: 0, name: "rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 120, reloadMs: 1500 },
 ];
 
 export const ST_DEAD = 0;
@@ -51,7 +52,8 @@ export const SPAWN_POINTS: readonly Vec3[] = [
 export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; }
 export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; }
 export interface ReadyMsg { t: "ready"; ready: boolean; }
-export type ClientMsg = InMsg | ShootMsg | ReadyMsg;
+export interface ReloadMsg { t: "reload"; }
+export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg;
 
 // ---- Server -> Client ----
 export interface PlayerSnap {
