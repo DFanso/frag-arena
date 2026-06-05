@@ -19,6 +19,9 @@ export interface MapProps {
   textures?: { grass: THREE.Texture | null; stone: THREE.Texture | null };
 }
 
+// A climbable ladder volume (axis-aligned XZ footprint in front of a wall, from baseY to topY).
+export interface Ladder { minX: number; maxX: number; minZ: number; maxZ: number; baseY: number; topY: number; }
+
 function fitWidth(obj: THREE.Object3D, targetW: number): void {
   obj.updateMatrixWorld(true);
   const s = new THREE.Vector3();
@@ -26,9 +29,10 @@ function fitWidth(obj: THREE.Object3D, targetW: number): void {
   obj.scale.setScalar(targetW / (Math.max(s.x, s.z) || 1));
 }
 
-export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual: THREE.Group } {
+export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual: THREE.Group; ladders: Ladder[] } {
   const collision = new THREE.Group();
   const visual = new THREE.Group();
+  const ladders: Ladder[] = [];
 
   const grassTex = reg.textures?.grass ?? null;
   const stoneTex = reg.textures?.stone ?? null;
@@ -182,6 +186,20 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
     note(mx, mz, 9);
   }
 
+  // --- Ladder towers: a solid tower you climb (ladder on the +Z face) to a high perch ---
+  const ladderTower = (x: number, z: number): void => {
+    const W = 5, H = 11;
+    solid(W, H, W, 0x77787c, x, H / 2, z); // solid tower; the top (y=H) is the perch
+    const lz = z + W / 2 + 0.07;           // ladder visual just in front of the +Z face
+    vstruct(0.14, H, 0.14, 0x5a3a1a, x - 0.55, H / 2, lz);
+    vstruct(0.14, H, 0.14, 0x5a3a1a, x + 0.55, H / 2, lz);
+    for (let ry = 0.6; ry < H; ry += 0.7) vstruct(1.25, 0.1, 0.1, 0x6b4a26, x, ry, lz);
+    ladders.push({ minX: x - 1.3, maxX: x + 1.3, minZ: z + W / 2, maxZ: z + W / 2 + 1.4, baseY: 0, topY: H });
+    note(x, z, 5);
+  };
+  ladderTower(16, -16);
+  ladderTower(-16, 16);
+
   // --- Big containers as chunky cover at clear mid-ring spots ---
   for (const [x, z, rot] of [[24, -52, 0], [-24, 52, 0], [52, 24, Math.PI / 2], [-52, -24, Math.PI / 2]] as Array<[number, number, number]>) {
     if (clearSpot(x, z, 3)) { solidProp(reg.container, 10, x, z, rot, { w: 10, h: 5, d: 4 }, 0x995533); note(x, z, 6); }
@@ -231,5 +249,5 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
     }
   }
 
-  return { collision, visual };
+  return { collision, visual, ladders };
 }

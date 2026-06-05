@@ -272,7 +272,7 @@ async function main(): Promise<void> {
   loading.done(); // assets + arena ready — reveal the game
 
   // Controls, HUD, SFX. LocalPlayer is created once we know our id (on welcome).
-  const controls = new FpsControls(camera, renderer.domElement, octree);
+  const controls = new FpsControls(camera, renderer.domElement, octree, arena.ladders);
   const hud = new Hud();
   const sfx = new Sfx();
   let local: LocalPlayer | undefined;

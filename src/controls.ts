@@ -7,6 +7,7 @@ import { Octree } from "three/addons/math/Octree.js";
 import { Capsule } from "three/addons/math/Capsule.js";
 import { resolveCollision } from "./physics";
 import { EYE_HEIGHT, type Vec3, type Rot } from "../worker/protocol";
+import type { Ladder } from "./map";
 
 // ---- Pure client-only movement tunables ----
 export const GRAVITY = 30;          // units/sec^2 (downward)
@@ -16,6 +17,7 @@ export const SPRINT_MULT = 1.7;     // accel multiplier while sprinting (Shift)
 export const DAMPING_GROUND = 8;    // velocity damping per second while grounded
 export const DAMPING_AIR = 0.2;     // velocity damping per second while airborne
 export const MAX_DELTA = 0.1;       // clamp render delta (seconds) after tab switches
+export const CLIMB_SPEED = 5.5;     // vertical speed while on a ladder (within the server clamp)
 
 // Pure: acceleration factor for this frame. Airborne control is reduced; Shift sprints.
 // Steady-state ground speed = accel / DAMPING_GROUND, so sprint stays within the server's
@@ -40,10 +42,17 @@ export function axisFromKeys(keys: KeyState): MoveAxis {
   return { fwd, right };
 }
 
+// Pure: is the capsule (XZ at end.x/z, feet at feetY, head at endY) inside a ladder volume,
+// and still below its top (so climbing is possible)?
+export function ladderContains(l: Ladder, x: number, z: number, feetY: number, endY: number): boolean {
+  return x >= l.minX && x <= l.maxX && z >= l.minZ && z <= l.maxZ && feetY < l.topY - 0.1 && endY > l.baseY;
+}
+
 export class FpsControls {
   readonly controls: PointerLockControls;
   readonly collider: Capsule;
   private octree: Octree;
+  private ladders: Ladder[];
   private camera: THREE.PerspectiveCamera;
   private velocity = new THREE.Vector3();
   private onFloor = false;
@@ -56,9 +65,10 @@ export class FpsControls {
   private fwdDir = new THREE.Vector3();
   private rightDir = new THREE.Vector3();
 
-  constructor(camera: THREE.PerspectiveCamera, dom: HTMLElement, octree: Octree) {
+  constructor(camera: THREE.PerspectiveCamera, dom: HTMLElement, octree: Octree, ladders: Ladder[] = []) {
     this.camera = camera;
     this.octree = octree;
+    this.ladders = ladders;
     this.controls = new PointerLockControls(camera, dom);
     // getObject() was removed: PointerLockControls IS the camera-holder now.
     // Collider rides from feet to eye; camera sits on collider.end.
@@ -110,22 +120,29 @@ export class FpsControls {
     const dt = clampDelta(dtSec);
     if (dt === 0) return;
 
-    // Gravity + damping.
-    if (!this.onFloor) {
+    const onLadder = this.isLocked && this.onLadder();
+    const grounded = this.onFloor || onLadder;
+
+    // Gravity (suspended on a ladder) + damping.
+    if (!grounded) {
       this.velocity.y -= GRAVITY * dt;
     }
-    const damping = Math.exp(-(this.onFloor ? DAMPING_GROUND : DAMPING_AIR) * dt) - 1;
+    const damping = Math.exp(-(grounded ? DAMPING_GROUND : DAMPING_AIR) * dt) - 1;
     this.velocity.addScaledVector(this.velocity, damping);
 
-    // Horizontal movement intent relative to look direction.
+    // Horizontal movement intent relative to look direction (+ ladder climb).
     if (this.isLocked) {
       const axis = axisFromKeys(this.keys);
       this.getForwardVector(this.fwdDir);
       this.getRightVector(this.rightDir);
-      const accel = moveAccel(this.onFloor, this.sprinting);
+      const accel = moveAccel(grounded, this.sprinting);
       this.velocity.addScaledVector(this.fwdDir, axis.fwd * accel * dt);
       this.velocity.addScaledVector(this.rightDir, axis.right * accel * dt);
-      if (this.wantJump && this.onFloor) {
+      if (onLadder) {
+        // W / Space climb up, S climbs down; forward push (above) carries you onto the top.
+        const climb = (this.keys.w || this.wantJump ? 1 : 0) - (this.keys.s ? 1 : 0);
+        this.velocity.y = climb * CLIMB_SPEED;
+      } else if (this.wantJump && this.onFloor) {
         this.velocity.y = JUMP_SPEED;
       }
     }
@@ -159,6 +176,15 @@ export class FpsControls {
 
   private syncCameraToCollider(): void {
     this.camera.position.copy(this.collider.end);
+  }
+
+  // True when the capsule is within a ladder volume (and not yet over its top).
+  private onLadder(): boolean {
+    const ex = this.collider.end.x, ez = this.collider.end.z, feet = this.collider.start.y, head = this.collider.end.y;
+    for (const l of this.ladders) {
+      if (ladderContains(l, ex, ez, feet, head)) return true;
+    }
+    return false;
   }
 
   private getForwardVector(out: THREE.Vector3): THREE.Vector3 {

@@ -4,12 +4,31 @@ import {
   clampDelta,
   axisFromKeys,
   moveAccel,
+  ladderContains,
   MAX_DELTA,
   MOVE_SPEED,
   SPRINT_MULT,
   DAMPING_GROUND,
 } from "../src/controls";
 import { MAX_MOVE_SPEED, MOVE_SPEED_TOLERANCE } from "../worker/protocol";
+import type { Ladder } from "../src/map";
+
+describe("ladderContains", () => {
+  const L: Ladder = { minX: -1, maxX: 1, minZ: 5, maxZ: 7, baseY: 0, topY: 11 };
+  it("is true when inside the footprint and below the top", () => {
+    expect(ladderContains(L, 0, 6, 3, 4)).toBe(true);
+  });
+  it("is false when outside the XZ footprint", () => {
+    expect(ladderContains(L, 3, 6, 3, 4)).toBe(false);
+    expect(ladderContains(L, 0, 9, 3, 4)).toBe(false);
+  });
+  it("is false once the feet reach the top (so you dismount)", () => {
+    expect(ladderContains(L, 0, 6, 11, 12)).toBe(false);
+  });
+  it("is false below the base", () => {
+    expect(ladderContains(L, 0, 6, -1, -0.2)).toBe(false);
+  });
+});
 
 describe("clampDelta", () => {
   it("passes a normal frame delta through unchanged", () => {
