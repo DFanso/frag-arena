@@ -80,6 +80,7 @@ interface PlayerRec {
   reserveAmmo: number[]; // rounds in reserve, per weapon id
   reloadEndsAt: number[]; // server epoch ms a reload completes, per weapon (0 = not reloading)
   lastGrenadeAt: number; // server epoch ms of the last grenade throw (cooldown)
+  c: boolean;            // crouching
 }
 
 // A thrown grenade in flight, awaiting detonation.
@@ -146,6 +147,7 @@ export class GameRoom extends DurableObject<Env> {
     rec.reserveAmmo = WEAPONS.map((w) => w.reserveAmmo);
     rec.reloadEndsAt = WEAPONS.map(() => 0);
     rec.lastGrenadeAt = 0;
+    rec.c = false;
     const msg: SpawnMsg = { t: "spawn", id: rec.id, p: rec.p, prot: SPAWN_PROTECTION_MS };
     this.broadcast(msg);
   }
@@ -177,6 +179,7 @@ export class GameRoom extends DurableObject<Env> {
       reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
       reloadEndsAt: WEAPONS.map(() => 0),
       lastGrenadeAt: 0,
+      c: false,
     };
 
     // Welcome carries the snapshots of players already IN THE MATCH (so a late joiner can
@@ -356,6 +359,7 @@ export class GameRoom extends DurableObject<Env> {
     rec.moveBudget = budget;
     rec.r = [m.r[0], m.r[1]];
     rec.v = [m.v[0], m.v[1], m.v[2]];
+    rec.c = !!m.c;
     rec.lastInputAt = now;
     rec.lastSeq = m.seq;
   }
@@ -585,6 +589,7 @@ export class GameRoom extends DurableObject<Env> {
       st: rec.st,
       frags: rec.frags,
       deaths: rec.deaths,
+      c: rec.c,
     };
   }
 

@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
-import { INTERP_DELAY_MS, EYE_HEIGHT, MAX_HP, type Vec3, type Rot, type InMsg } from "../worker/protocol";
+import { INTERP_DELAY_MS, EYE_HEIGHT, CROUCH_EYE_HEIGHT, MAX_HP, type Vec3, type Rot, type InMsg } from "../worker/protocol";
 import { sampleBuffer, type Snapshot } from "./interp";
 import { pickAnim } from "./anim";
 import { healthFraction, healthColor } from "./health-ui";
@@ -31,7 +31,7 @@ export class LocalPlayer {
   }
 
   // Build the next InMsg from explicit p/r/v + timestamp, bumping the seq counter.
-  buildInput(p: Vec3, r: Rot, v: Vec3, tsMs: number): InMsg {
+  buildInput(p: Vec3, r: Rot, v: Vec3, tsMs: number, crouch = false): InMsg {
     return {
       t: "in",
       seq: this.nextSeq(),
@@ -39,6 +39,7 @@ export class LocalPlayer {
       p: [p[0], p[1], p[2]],
       r: [r[0], r[1]],
       v: [v[0], v[1], v[2]],
+      c: crouch,
     };
   }
 
@@ -68,6 +69,7 @@ export class RemotePlayer {
   private buffer: Snapshot[] = [];
   private speedXZ = 0;
   private shootingUntil = 0;
+  private crouching = false;
 
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Record<string, THREE.AnimationAction> = {};
@@ -205,6 +207,13 @@ export class RemotePlayer {
     this.speedXZ = Math.hypot(v[0], v[2]);
   }
 
+  // Crouch: squash the body vertically (feet stay grounded) so remotes look crouched.
+  setCrouch(crouch: boolean): void {
+    if (this.crouching === crouch) return;
+    this.crouching = crouch;
+    this.group.scale.y = crouch ? CROUCH_EYE_HEIGHT / EYE_HEIGHT : 1;
+  }
+
   playShoot(): void {
     this.shootingUntil = performance.now() + SHOOT_CUE_MS;
     const punch = this.actions["Punch"] ?? this.actions["Wave"];
@@ -219,9 +228,10 @@ export class RemotePlayer {
   update(nowMs: number, dtMs: number): void {
     const sample = sampleBuffer(this.buffer, nowMs - INTERP_DELAY_MS);
     if (sample) {
-      // Server p is the eye position (y = EYE_HEIGHT); subtract it so the group origin
-      // (the character's feet + proxy base) sits on the ground.
-      this.group.position.set(sample.p[0], sample.p[1] - EYE_HEIGHT, sample.p[2]);
+      // Server p is the eye position; subtract the (crouch-aware) eye height so the group
+      // origin (the character's feet) stays on the ground.
+      const eye = this.crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
+      this.group.position.set(sample.p[0], sample.p[1] - eye, sample.p[2]);
       this.group.rotation.y = sample.r[0];
     }
     if (this.mixer) {

@@ -20,12 +20,18 @@ describe("LocalPlayer.buildInput", () => {
   it("builds an InMsg with an incrementing seq from nextSeq", () => {
     const lp = new LocalPlayer(1);
     const m1: InMsg = lp.buildInput([1, 2, 3], [0.5, -0.2], [0, 0, 1], 1000);
-    expect(m1).toEqual({ t: "in", seq: 1, ts: 1000, p: [1, 2, 3], r: [0.5, -0.2], v: [0, 0, 1] });
+    expect(m1).toEqual({ t: "in", seq: 1, ts: 1000, p: [1, 2, 3], r: [0.5, -0.2], v: [0, 0, 1], c: false });
 
     const m2: InMsg = lp.buildInput([4, 5, 6], [0, 0], [0, 0, 0], 1066);
     expect(m2.seq).toBe(2);
     expect(m2.ts).toBe(1066);
     expect(m2.t).toBe("in");
+  });
+
+  it("carries the crouch flag", () => {
+    const lp = new LocalPlayer(2);
+    expect(lp.buildInput([0, 0, 0], [0, 0], [0, 0, 0], 0, true).c).toBe(true);
+    expect(lp.buildInput([0, 0, 0], [0, 0], [0, 0, 0], 0).c).toBe(false);
   });
 
   it("copies the position/rotation/velocity arrays (no shared reference)", () => {

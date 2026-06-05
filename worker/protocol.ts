@@ -14,7 +14,8 @@ export const SPAWN_PROTECTION_MS = 2500;
 export const LAGCOMP_MAX_REWIND_MS = 500;
 export const POSITION_BUFFER_MS = 1000;                   // keep ~1s of positions for rewind
 export const MAX_HP = 100;
-export const EYE_HEIGHT = 1.0;                            // capsule top y at spawn
+export const EYE_HEIGHT = 1.0;                            // capsule top y at spawn (standing)
+export const CROUCH_EYE_HEIGHT = 0.6;                    // capsule top y while crouching
 export const AIM_CONE_DOT = Math.cos((4 * Math.PI) / 180); // ~4 degrees (legacy; superseded by HIT_RADIUS)
 export const HIT_RADIUS = 1.2;                            // accept a shot whose aim ray passes within this of the target body
 export const MAX_MOVE_SPEED = 12;                         // units/sec
@@ -60,7 +61,7 @@ export const SPAWN_POINTS: readonly Vec3[] = [
 ];
 
 // ---- Client -> Server ----
-export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; }
+export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; c?: boolean; }
 export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; }
 export interface ReadyMsg { t: "ready"; ready: boolean; }
 export interface ReloadMsg { t: "reload"; w: number; }
@@ -69,7 +70,7 @@ export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg;
 
 // ---- Server -> Client ----
 export interface PlayerSnap {
-  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number;
+  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean;
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
 export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; }

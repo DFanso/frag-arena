@@ -174,6 +174,7 @@ function makeRecIngest(now: number, p: Vec3 = [0, 1, 0]) {
     rate: { windowStart: now, count: 0 },
     ready: false,
     inMatch: true,
+    c: false,
   };
 }
 
@@ -396,6 +397,7 @@ function makeRec(
     reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
     reloadEndsAt: WEAPONS.map(() => 0),
     lastGrenadeAt: 0,
+    c: false,
   };
 }
 

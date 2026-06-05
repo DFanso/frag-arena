@@ -363,6 +363,7 @@ async function main(): Promise<void> {
         rp.addSnapshot({ t: m.ts, p: ps.p, r: ps.r });
         rp.setVelocity(ps.v);
         rp.setHealth(ps.hp);
+        rp.setCrouch(ps.c ?? false);
       }
     }
   });
@@ -482,6 +483,7 @@ async function main(): Promise<void> {
         controls.getRotation(),
         controls.getVelocity(),
         Date.now(),
+        controls.isCrouching,
       );
       net.send(msg);
       return 0;

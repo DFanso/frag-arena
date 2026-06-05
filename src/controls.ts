@@ -6,7 +6,7 @@ import { PointerLockControls } from "three/addons/controls/PointerLockControls.j
 import { Octree } from "three/addons/math/Octree.js";
 import { Capsule } from "three/addons/math/Capsule.js";
 import { resolveCollision } from "./physics";
-import { EYE_HEIGHT, type Vec3, type Rot } from "../worker/protocol";
+import { EYE_HEIGHT, CROUCH_EYE_HEIGHT, type Vec3, type Rot } from "../worker/protocol";
 import type { Ladder } from "./map";
 
 // ---- Pure client-only movement tunables ----
@@ -18,6 +18,8 @@ export const DAMPING_GROUND = 8;    // velocity damping per second while grounde
 export const DAMPING_AIR = 0.2;     // velocity damping per second while airborne
 export const MAX_DELTA = 0.1;       // clamp render delta (seconds) after tab switches
 export const CLIMB_SPEED = 5.5;     // vertical speed while on a ladder (within the server clamp)
+export const CROUCH_SPEED_MULT = 0.55; // movement multiplier while crouched
+const FEET_OFFSET = 0.35;           // capsule.start.y above the ground (feet)
 
 // Pure: acceleration factor for this frame. Airborne control is reduced; Shift sprints.
 // Steady-state ground speed = accel / DAMPING_GROUND, so sprint stays within the server's
@@ -59,6 +61,8 @@ export class FpsControls {
   private keys: KeyState = { w: false, a: false, s: false, d: false };
   private wantJump = false;
   private sprinting = false;
+  private wantCrouch = false;
+  private curSeg = EYE_HEIGHT - FEET_OFFSET; // current capsule segment height (eye above feet)
   private lockChangeCbs: ((locked: boolean) => void)[] = [];
 
   // scratch vectors (avoid per-frame allocation)
@@ -88,6 +92,7 @@ export class FpsControls {
   lock(): void { this.controls.lock(); }
   unlock(): void { this.controls.unlock(); }
   get isLocked(): boolean { return this.controls.isLocked; }
+  get isCrouching(): boolean { return this.wantCrouch; }
 
   // Subscribe to PointerLock lock/unlock transitions (true = locked).
   onLockChange(cb: (locked: boolean) => void): void {
@@ -96,9 +101,9 @@ export class FpsControls {
 
   // Teleport the player (used by reconciliation / spawn).
   setPosition(p: Vec3): void {
-    const dy = this.collider.end.y - this.collider.start.y;
+    this.curSeg = EYE_HEIGHT - FEET_OFFSET; // stand up on (re)spawn
     this.collider.end.set(p[0], p[1], p[2]);
-    this.collider.start.set(p[0], p[1] - dy, p[2]);
+    this.collider.start.set(p[0], p[1] - this.curSeg, p[2]);
     this.velocity.set(0, 0, 0);
     this.syncCameraToCollider();
   }
@@ -120,6 +125,11 @@ export class FpsControls {
     const dt = clampDelta(dtSec);
     if (dt === 0) return;
 
+    // Crouch: smoothly shrink the capsule (eye drops toward the feet) so you're lower + smaller.
+    const targetSeg = (this.isLocked && this.wantCrouch ? CROUCH_EYE_HEIGHT : EYE_HEIGHT) - FEET_OFFSET;
+    this.curSeg += (targetSeg - this.curSeg) * Math.min(1, dt * 12);
+    this.collider.end.y = this.collider.start.y + this.curSeg;
+
     const onLadder = this.isLocked && this.onLadder();
     const grounded = this.onFloor || onLadder;
 
@@ -135,7 +145,7 @@ export class FpsControls {
       const axis = axisFromKeys(this.keys);
       this.getForwardVector(this.fwdDir);
       this.getRightVector(this.rightDir);
-      const accel = moveAccel(grounded, this.sprinting);
+      const accel = moveAccel(grounded, this.sprinting && !this.wantCrouch) * (this.wantCrouch ? CROUCH_SPEED_MULT : 1);
       this.velocity.addScaledVector(this.fwdDir, axis.fwd * accel * dt);
       this.velocity.addScaledVector(this.rightDir, axis.right * accel * dt);
       if (onLadder) {
@@ -209,6 +219,7 @@ export class FpsControls {
       case "KeyD": this.keys.d = true; break;
       case "Space": this.wantJump = true; break;
       case "ShiftLeft": case "ShiftRight": this.sprinting = true; break;
+      case "KeyC": this.wantCrouch = true; break;
     }
   };
   private onKeyUp = (e: KeyboardEvent): void => {
@@ -218,6 +229,7 @@ export class FpsControls {
       case "KeyS": this.keys.s = false; break;
       case "KeyD": this.keys.d = false; break;
       case "ShiftLeft": case "ShiftRight": this.sprinting = false; break;
+      case "KeyC": this.wantCrouch = false; break;
     }
   };
 }
