@@ -68,9 +68,9 @@ interface PlayerRec {
   moveBudget?: number; // anti-teleport token bucket (units of travel available)
   ready: boolean;      // lobby: has this player clicked Ready?
   inMatch: boolean;    // is this player part of the CURRENT match (vs waiting in the lobby)?
-  ammo: number;        // rounds in the current magazine
-  reserveAmmo: number; // rounds in reserve
-  reloadEndsAt: number; // server epoch ms a reload completes (0 = not reloading)
+  ammo: number[];        // rounds in the magazine, per weapon id
+  reserveAmmo: number[]; // rounds in reserve, per weapon id
+  reloadEndsAt: number[]; // server epoch ms a reload completes, per weapon (0 = not reloading)
 }
 
 export class GameRoom extends DurableObject<Env> {
@@ -129,9 +129,9 @@ export class GameRoom extends DurableObject<Env> {
     rec.st = ST_PROTECTED;
     rec.protectedUntil = now + SPAWN_PROTECTION_MS;
     rec.respawnAt = 0;
-    rec.ammo = WEAPONS[0]!.clipSize;        // full mag + reserve on (re)spawn
-    rec.reserveAmmo = WEAPONS[0]!.reserveAmmo;
-    rec.reloadEndsAt = 0;
+    rec.ammo = WEAPONS.map((w) => w.clipSize);        // full mags + reserve on (re)spawn
+    rec.reserveAmmo = WEAPONS.map((w) => w.reserveAmmo);
+    rec.reloadEndsAt = WEAPONS.map(() => 0);
     const msg: SpawnMsg = { t: "spawn", id: rec.id, p: rec.p, prot: SPAWN_PROTECTION_MS };
     this.broadcast(msg);
   }
@@ -159,9 +159,9 @@ export class GameRoom extends DurableObject<Env> {
       rate: { windowStart: now, count: 0 },
       ready: false,
       inMatch: false,
-      ammo: WEAPONS[0]!.clipSize,
-      reserveAmmo: WEAPONS[0]!.reserveAmmo,
-      reloadEndsAt: 0,
+      ammo: WEAPONS.map((w) => w.clipSize),
+      reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
+      reloadEndsAt: WEAPONS.map(() => 0),
     };
 
     // Welcome carries the snapshots of players already IN THE MATCH (so a late joiner can
@@ -307,7 +307,7 @@ export class GameRoom extends DurableObject<Env> {
       return;
     }
     if (msg.t === "reload") {
-      this.handleReload(rec);
+      this.handleReload(rec, msg.w);
       return;
     }
   }
@@ -343,10 +343,11 @@ export class GameRoom extends DurableObject<Env> {
   private handleShoot(rec: PlayerRec, m: ShootMsg): void {
     if (!rec.inMatch) return; // no combat in the lobby (inMatch ⇒ a match is active)
     const now = Date.now();
-    this.completeReloadIfDue(rec, now);
-    if (rec.reloadEndsAt > now) return; // gun can't fire mid-reload
-    if (rec.ammo <= 0) return;          // empty magazine (client auto-reloads)
-    const weapon = WEAPONS[m.w] ?? WEAPONS[0]!;
+    const w = m.w >= 0 && m.w < WEAPONS.length ? m.w : 0;
+    const weapon = WEAPONS[w]!;
+    this.completeReloadIfDue(rec, w, now);
+    if (rec.reloadEndsAt[w]! > now) return; // gun can't fire mid-reload
+    if (rec.ammo[w]! <= 0) return;          // empty magazine (client auto-reloads)
     const rawTarget = m.hit === null ? null : (this.byId.get(m.hit) ?? null);
     const target = rawTarget && rawTarget.inMatch ? rawTarget : null; // only in-match players are valid targets
 
@@ -370,9 +371,9 @@ export class GameRoom extends DurableObject<Env> {
     // "dead" / "firerate" mean the gun did NOT discharge: leave lastShotAt untouched.
     if (reject === "dead" || reject === "firerate") return;
 
-    // The gun fired. Record the shot time and consume a round.
+    // The gun fired. Record the shot time and consume a round (of the fired weapon).
     rec.lastShotAt = now;
-    rec.ammo -= 1;
+    rec.ammo[w]! -= 1;
 
     // Fired, but the claimed hit was not valid (no/dead/protected target, range, aim).
     if (reject !== null || target === null) return;
@@ -381,24 +382,25 @@ export class GameRoom extends DurableObject<Env> {
     this.applyDamage(target, dmg, rec, m.head);
   }
 
-  // Begin a reload if the magazine isn't already full and reserve remains.
-  private handleReload(rec: PlayerRec): void {
+  // Begin a reload of weapon `wRaw` if its magazine isn't full and reserve remains.
+  private handleReload(rec: PlayerRec, wRaw: number): void {
     if (!rec.inMatch) return;
+    const w = wRaw >= 0 && wRaw < WEAPONS.length ? wRaw : 0;
     const now = Date.now();
-    this.completeReloadIfDue(rec, now);
-    const w = WEAPONS[0]!;
-    if (rec.reloadEndsAt > now || rec.ammo >= w.clipSize || rec.reserveAmmo <= 0) return;
-    rec.reloadEndsAt = now + w.reloadMs;
+    this.completeReloadIfDue(rec, w, now);
+    const weapon = WEAPONS[w]!;
+    if (rec.reloadEndsAt[w]! > now || rec.ammo[w]! >= weapon.clipSize || rec.reserveAmmo[w]! <= 0) return;
+    rec.reloadEndsAt[w] = now + weapon.reloadMs;
   }
 
-  // Finish a reload whose timer has elapsed: move rounds from reserve into the magazine.
-  private completeReloadIfDue(rec: PlayerRec, now: number): void {
-    if (rec.reloadEndsAt !== 0 && now >= rec.reloadEndsAt) {
-      const w = WEAPONS[0]!;
-      const need = Math.min(w.clipSize - rec.ammo, rec.reserveAmmo);
-      rec.ammo += need;
-      rec.reserveAmmo -= need;
-      rec.reloadEndsAt = 0;
+  // Finish weapon `w`'s reload if its timer elapsed: move rounds from reserve into the magazine.
+  private completeReloadIfDue(rec: PlayerRec, w: number, now: number): void {
+    if (rec.reloadEndsAt[w]! !== 0 && now >= rec.reloadEndsAt[w]!) {
+      const weapon = WEAPONS[w]!;
+      const need = Math.min(weapon.clipSize - rec.ammo[w]!, rec.reserveAmmo[w]!);
+      rec.ammo[w]! += need;
+      rec.reserveAmmo[w]! -= need;
+      rec.reloadEndsAt[w] = 0;
     }
   }
 
@@ -451,7 +453,7 @@ export class GameRoom extends DurableObject<Env> {
     // 1) Advance respawn / spawn-protection timers for IN-MATCH players.
     for (const rec of this.players.values()) {
       if (!rec.inMatch) continue;
-      this.completeReloadIfDue(rec, now);
+      for (let w = 0; w < WEAPONS.length; w++) this.completeReloadIfDue(rec, w, now);
       if (rec.st === ST_DEAD && rec.respawnAt !== 0 && now >= rec.respawnAt) {
         this.spawn(rec);
       } else if (rec.st === ST_PROTECTED && now > rec.protectedUntil) {

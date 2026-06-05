@@ -37,6 +37,8 @@ export class Hud {
   private healthFill: HTMLDivElement;
   private healthText: HTMLSpanElement;
   private ammoEl: HTMLDivElement;
+  private weaponEl: HTMLDivElement;
+  private scopeEl: HTMLDivElement;
   private prompt: HTMLDivElement;
   private hitMarker: HTMLDivElement;
   private scoreboard: HTMLDivElement;
@@ -104,6 +106,27 @@ export class Hud {
       "text-shadow:0 2px 4px #000;text-align:right;";
     root.appendChild(ammo);
     this.ammoEl = ammo;
+
+    // Current weapon name (just above the ammo counter).
+    const weaponLbl = document.createElement("div");
+    weaponLbl.style.cssText =
+      "position:absolute;right:24px;bottom:54px;color:#cdd;font:600 14px monospace;" +
+      "text-shadow:0 1px 2px #000;text-align:right;opacity:.85;";
+    root.appendChild(weaponLbl);
+    this.weaponEl = weaponLbl;
+
+    // Sniper scope overlay (hidden until ADS with a scoped weapon). Clear center circle,
+    // dark surround, thin reticle lines; the normal crosshair shows through the center.
+    const scope = document.createElement("div");
+    scope.style.cssText =
+      "position:fixed;inset:0;display:none;pointer-events:none;z-index:22;" +
+      "background:radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 0 15%," +
+      "rgba(0,0,0,0.5) 16% 18%, rgba(0,0,0,0.97) 23%);";
+    scope.innerHTML =
+      '<div style="position:absolute;left:50%;top:0;width:1px;height:100%;background:rgba(0,0,0,.55)"></div>' +
+      '<div style="position:absolute;top:50%;left:0;height:1px;width:100%;background:rgba(0,0,0,.55)"></div>';
+    root.appendChild(scope);
+    this.scopeEl = scope;
 
     // "Click to play" prompt (centered overlay).
     const prompt = document.createElement("div");
@@ -184,6 +207,16 @@ export class Hud {
     this.ammoEl.innerHTML =
       `<span style="color:${color}">${clip}</span>` +
       `<span style="font-size:15px;opacity:.7"> / ${reserve}</span>`;
+  }
+
+  /** Set the current weapon name label. */
+  setWeapon(name: string): void {
+    this.weaponEl.textContent = name;
+  }
+
+  /** Show/hide the sniper scope overlay (on ADS with a scoped weapon). */
+  setScope(active: boolean): void {
+    this.scopeEl.style.display = active ? "block" : "none";
   }
 
   /** Update the health bar from the local player's hp (0..MAX_HP). */

@@ -392,9 +392,9 @@ function makeRec(
     rate: { windowStart: Date.now(), count: 0 },
     ready: false,
     inMatch: opts.inMatch ?? true, // most direct-method tests exercise in-match behavior
-    ammo: WEAPONS[0]!.clipSize,
-    reserveAmmo: WEAPONS[0]!.reserveAmmo,
-    reloadEndsAt: 0,
+    ammo: WEAPONS.map((w) => w.clipSize),
+    reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
+    reloadEndsAt: WEAPONS.map(() => 0),
   };
 }
 
@@ -551,15 +551,15 @@ describe("GameRoom ammo / reload", () => {
       inst.broadcast = () => {};
       const now = Date.now();
       const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
-      shooter.ammo = 1;
-      shooter.reserveAmmo = 0;
+      shooter.ammo[0] = 1;
+      shooter.reserveAmmo[0] = 0;
       inst.byId.set(1, shooter);
       const shot = { t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: null, head: false };
       inst.handleShoot(shooter, shot);
-      expect(shooter.ammo).toBe(0); // one round consumed
+      expect(shooter.ammo[0]).toBe(0); // one round consumed
       const lastShot = shooter.lastShotAt;
       inst.handleShoot(shooter, { ...shot, seq: 2, ts: now + 500 }); // now empty
-      expect(shooter.ammo).toBe(0); // no underflow
+      expect(shooter.ammo[0]).toBe(0); // no underflow
       expect(shooter.lastShotAt).toBe(lastShot); // gun did not discharge
     });
   });
@@ -568,26 +568,26 @@ describe("GameRoom ammo / reload", () => {
     const stub = env.ROOMS.getByName("ammo-reload");
     await runInDurableObject(stub, async (instance: GameRoom) => {
       const inst = instance as unknown as RoomInternals & {
-        handleReload: (r: ReturnType<typeof makeRec>) => void;
-        completeReloadIfDue: (r: ReturnType<typeof makeRec>, now: number) => void;
+        handleReload: (r: ReturnType<typeof makeRec>, w: number) => void;
+        completeReloadIfDue: (r: ReturnType<typeof makeRec>, w: number, now: number) => void;
       };
       inst.broadcast = () => {};
       const now = Date.now();
       const rec = makeRec(1, [0, 1, 0]);
-      rec.ammo = 5;
-      rec.reserveAmmo = 50;
+      rec.ammo[0] = 5;
+      rec.reserveAmmo[0] = 50;
       inst.byId.set(1, rec);
       inst.players.set(rec.ws, rec);
 
-      inst.handleReload(rec);
-      expect(rec.reloadEndsAt).toBeGreaterThan(now); // reload in progress
-      inst.completeReloadIfDue(rec, now); // not due yet
-      expect(rec.ammo).toBe(5);
-      inst.completeReloadIfDue(rec, rec.reloadEndsAt + 1); // due
+      inst.handleReload(rec, 0);
+      expect(rec.reloadEndsAt[0]).toBeGreaterThan(now); // reload in progress
+      inst.completeReloadIfDue(rec, 0, now); // not due yet
+      expect(rec.ammo[0]).toBe(5);
+      inst.completeReloadIfDue(rec, 0, rec.reloadEndsAt[0]! + 1); // due
       const w = WEAPONS[0]!;
-      expect(rec.ammo).toBe(w.clipSize);
-      expect(rec.reserveAmmo).toBe(50 - (w.clipSize - 5));
-      expect(rec.reloadEndsAt).toBe(0);
+      expect(rec.ammo[0]).toBe(w.clipSize);
+      expect(rec.reserveAmmo[0]).toBe(50 - (w.clipSize - 5));
+      expect(rec.reloadEndsAt[0]).toBe(0);
     });
   });
 });

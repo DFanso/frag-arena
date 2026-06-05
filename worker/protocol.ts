@@ -29,9 +29,12 @@ export type Rot = [number, number];                       // [yaw, pitch] in rad
 export interface Weapon {
   id: number; name: string; damage: number; headMult: number; maxRange: number; cooldownMs: number;
   clipSize: number; reserveAmmo: number; reloadMs: number;
+  adsZoom: number; // FOV multiplier while aiming down sights (1 = no zoom)
+  scoped: boolean; // true → full-screen scope overlay on ADS (sniper)
 }
 export const WEAPONS: readonly Weapon[] = [
-  { id: 0, name: "rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 120, reloadMs: 1500 },
+  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 120, reloadMs: 1500, adsZoom: 0.8, scoped: false },
+  { id: 1, name: "Sniper", damage: 90, headMult: 2, maxRange: 320, cooldownMs: 1100, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true },
 ];
 
 export const ST_DEAD = 0;
@@ -52,7 +55,7 @@ export const SPAWN_POINTS: readonly Vec3[] = [
 export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; }
 export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; }
 export interface ReadyMsg { t: "ready"; ready: boolean; }
-export interface ReloadMsg { t: "reload"; }
+export interface ReloadMsg { t: "reload"; w: number; }
 export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg;
 
 // ---- Server -> Client ----

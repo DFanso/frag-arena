@@ -28,7 +28,7 @@ import { buildArena } from "./map";
 import { buildOctree } from "./physics";
 import { FpsControls } from "./controls";
 import { LocalPlayer, RemotePlayer } from "./player";
-import { wireShooting } from "./combat";
+import { WeaponController } from "./weapons";
 import { Hud } from "./hud";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
@@ -299,7 +299,7 @@ async function main(): Promise<void> {
   let matchEndsAt = 0;     // server epoch ms the match ends (0 = no active match)
   let latestSnapTs = 0;    // server clock from the latest snap (skew-free timer reference)
   let phase: "lobby" | "match" = "lobby"; // start in the ready-up lobby
-  let shootHandle: ReturnType<typeof wireShooting> | undefined; // ammo/reload owner
+  let shootHandle: WeaponController | undefined; // weapons / ammo / reload / ADS owner
 
   function nameOf(id: number): string {
     return latestSnap.find((p) => p.id === id)?.name ?? "";
@@ -428,15 +428,16 @@ async function main(): Promise<void> {
     hud.showResults(m.standings, myId, () => hud.hideResults());
   });
 
-  // ---- shooting (single owner: combat.wireShooting — D15) -------------------
+  // ---- weapons (fire / reload / switch / ADS — single owner) ----------------
 
-  shootHandle = wireShooting({
+  shootHandle = new WeaponController({
     camera,
     dom: renderer.domElement,
     getTargets: () => [...remotes.values()].map((rp) => rp.body),
     isLocked: () => controls.isLocked,
     nextSeq: () => (local ? local.nextSeq() : 0),
     send: (m) => net.send(m),
+    baseFov: camera.fov,
     onLocalShoot: (hit) => {
       sfx.shoot();
       viewmodel.recoil();
@@ -444,8 +445,9 @@ async function main(): Promise<void> {
       if (hit) hud.flashHitMarker();
     },
     onAmmo: (clip, reserve, reloading) => hud.setAmmo(clip, reserve, reloading),
-    onReload: () => { sfx.reload(); net.send({ t: "reload" }); },
-    onDryFire: () => sfx.dryFire(),
+    onWeapon: (name) => hud.setWeapon(name),
+    onScope: (active) => hud.setScope(active),
+    sfx: { shoot: () => sfx.shoot(), reload: () => sfx.reload(), dryFire: () => sfx.dryFire() },
   });
 
   // ---- resize --------------------------------------------------------------
