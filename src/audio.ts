@@ -29,6 +29,18 @@ export class Sfx {
     this.blip("sawtooth", 260, 60, 0.28, 0.22);
   }
 
+  reload(): void {
+    this.blip("square", 160, 220, 0.12, 0.09);
+  }
+
+  dryFire(): void {
+    this.blip("square", 120, 90, 0.10, 0.04);
+  }
+
+  explosion(): void {
+    this.blip("sawtooth", 200, 36, 0.4, 0.38);
+  }
+
   /**
    * Play one short tone: oscillator sweeping freqStart -> freqEnd over `dur` seconds,
    * with a quick gain envelope so it sounds like a blip and never clicks.

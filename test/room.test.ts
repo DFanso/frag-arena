@@ -392,6 +392,10 @@ function makeRec(
     rate: { windowStart: Date.now(), count: 0 },
     ready: false,
     inMatch: opts.inMatch ?? true, // most direct-method tests exercise in-match behavior
+    ammo: WEAPONS.map((w) => w.clipSize),
+    reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
+    reloadEndsAt: WEAPONS.map(() => 0),
+    lastGrenadeAt: 0,
   };
 }
 
@@ -535,6 +539,92 @@ describe("GameRoom.handleShoot", () => {
       // gun still discharges (records lastShotAt) but no hit is broadcast
       expect(shooter.lastShotAt).toBeGreaterThanOrEqual(now);
       expect(broadcasts.find((b) => (b as { t?: string }).t === "hit")).toBeUndefined();
+    });
+  });
+});
+
+// ---- ammo + reload (issue #7) ----
+describe("GameRoom ammo / reload", () => {
+  it("consumes a round per shot and rejects firing on an empty magazine", async () => {
+    const stub = env.ROOMS.getByName("ammo-empty");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      shooter.ammo[0] = 1;
+      shooter.reserveAmmo[0] = 0;
+      inst.byId.set(1, shooter);
+      const shot = { t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: null, head: false };
+      inst.handleShoot(shooter, shot);
+      expect(shooter.ammo[0]).toBe(0); // one round consumed
+      const lastShot = shooter.lastShotAt;
+      inst.handleShoot(shooter, { ...shot, seq: 2, ts: now + 500 }); // now empty
+      expect(shooter.ammo[0]).toBe(0); // no underflow
+      expect(shooter.lastShotAt).toBe(lastShot); // gun did not discharge
+    });
+  });
+
+  it("reload moves rounds from reserve into the magazine after reloadMs", async () => {
+    const stub = env.ROOMS.getByName("ammo-reload");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        handleReload: (r: ReturnType<typeof makeRec>, w: number) => void;
+        completeReloadIfDue: (r: ReturnType<typeof makeRec>, w: number, now: number) => void;
+      };
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const rec = makeRec(1, [0, 1, 0]);
+      rec.ammo[0] = 5;
+      rec.reserveAmmo[0] = 50;
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+
+      inst.handleReload(rec, 0);
+      expect(rec.reloadEndsAt[0]).toBeGreaterThan(now); // reload in progress
+      inst.completeReloadIfDue(rec, 0, now); // not due yet
+      expect(rec.ammo[0]).toBe(5);
+      inst.completeReloadIfDue(rec, 0, rec.reloadEndsAt[0]! + 1); // due
+      const w = WEAPONS[0]!;
+      expect(rec.ammo[0]).toBe(w.clipSize);
+      expect(rec.reserveAmmo[0]).toBe(50 - (w.clipSize - 5));
+      expect(rec.reloadEndsAt[0]).toBe(0);
+    });
+  });
+});
+
+// ---- grenade AoE (issue #1) ----
+describe("GameRoom grenade", () => {
+  it("detonates with linear-falloff AoE damage to players in the blast radius", async () => {
+    const stub = env.ROOMS.getByName("nade-aoe");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & { grenades: unknown[]; detonate: (g: unknown) => void };
+      inst.broadcast = () => {};
+      const thrower = makeRec(1, [0, 1, 0]);
+      const near = makeRec(2, [2, 1, 0]);   // 2 units from the blast
+      const far = makeRec(3, [50, 1, 0]);   // well outside the radius
+      for (const r of [thrower, near, far]) { inst.byId.set(r.id, r); inst.players.set(r.ws, r); }
+
+      inst.detonate({ pos: [0, 1, 0], explodeAt: Date.now() - 1, shooterId: 1 });
+
+      expect(near.hp).toBeLessThan(MAX_HP);  // took falloff damage
+      expect(near.hp).toBeGreaterThan(0);    // 2/9 of the radius → partial damage, survives
+      expect(far.hp).toBe(MAX_HP);           // out of range, untouched
+    });
+  });
+
+  it("a self-grenade kill does not credit a frag", async () => {
+    const stub = env.ROOMS.getByName("nade-self");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & { detonate: (g: unknown) => void };
+      inst.broadcast = () => {};
+      const me = makeRec(1, [0, 1, 0], { hp: 30 });
+      inst.byId.set(1, me);
+      inst.players.set(me.ws, me);
+      inst.detonate({ pos: [0, 1, 0], explodeAt: Date.now() - 1, shooterId: 1 });
+      expect(me.st).toBe(ST_DEAD);
+      expect(me.deaths).toBe(1);
+      expect(me.frags).toBe(0); // no frag for blowing yourself up
     });
   });
 });

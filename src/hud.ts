@@ -36,6 +36,9 @@ export class Hud {
   private root: HTMLDivElement;
   private healthFill: HTMLDivElement;
   private healthText: HTMLSpanElement;
+  private ammoEl: HTMLDivElement;
+  private weaponEl: HTMLDivElement;
+  private scopeEl: HTMLDivElement;
   private prompt: HTMLDivElement;
   private hitMarker: HTMLDivElement;
   private scoreboard: HTMLDivElement;
@@ -96,12 +99,41 @@ export class Hud {
     this.healthFill = fill;
     this.healthText = text;
 
+    // Ammo counter (bottom-right): "clip / reserve" or "RELOADING…".
+    const ammo = document.createElement("div");
+    ammo.style.cssText =
+      "position:absolute;right:24px;bottom:20px;color:#fff;font:700 24px monospace;" +
+      "text-shadow:0 2px 4px #000;text-align:right;";
+    root.appendChild(ammo);
+    this.ammoEl = ammo;
+
+    // Current weapon name (just above the ammo counter).
+    const weaponLbl = document.createElement("div");
+    weaponLbl.style.cssText =
+      "position:absolute;right:24px;bottom:54px;color:#cdd;font:600 14px monospace;" +
+      "text-shadow:0 1px 2px #000;text-align:right;opacity:.85;";
+    root.appendChild(weaponLbl);
+    this.weaponEl = weaponLbl;
+
+    // Sniper scope overlay (hidden until ADS with a scoped weapon). Clear center circle,
+    // dark surround, thin reticle lines; the normal crosshair shows through the center.
+    const scope = document.createElement("div");
+    scope.style.cssText =
+      "position:fixed;inset:0;display:none;pointer-events:none;z-index:22;" +
+      "background:radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 0 15%," +
+      "rgba(0,0,0,0.5) 16% 18%, rgba(0,0,0,0.97) 23%);";
+    scope.innerHTML =
+      '<div style="position:absolute;left:50%;top:0;width:1px;height:100%;background:rgba(0,0,0,.55)"></div>' +
+      '<div style="position:absolute;top:50%;left:0;height:1px;width:100%;background:rgba(0,0,0,.55)"></div>';
+    root.appendChild(scope);
+    this.scopeEl = scope;
+
     // "Click to play" prompt (centered overlay).
     const prompt = document.createElement("div");
     prompt.style.cssText =
       "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
       "background:rgba(0,0,0,.55);color:#fff;font-size:24px;text-align:center;";
-    prompt.textContent = "Click to play  ·  WASD move · Shift sprint · Space jump · Mouse aim · Click shoot · Tab scores";
+    prompt.textContent = "Click to play  ·  WASD move · Shift sprint · Space jump · Click shoot · Right-click aim · R reload · 1/2 weapon · G grenade · Tab scores";
     root.appendChild(prompt);
     this.prompt = prompt;
 
@@ -163,6 +195,28 @@ export class Hud {
   /** Tell the HUD which player id is the local player (highlighted in scoreboard). */
   setMyId(id: number): void {
     this.myId = id;
+  }
+
+  /** Update the ammo counter (magazine / reserve), or show a reloading state. */
+  setAmmo(clip: number, reserve: number, reloading: boolean): void {
+    if (reloading) {
+      this.ammoEl.innerHTML = '<span style="font-size:16px;color:#ffcc66">RELOADING…</span>';
+      return;
+    }
+    const color = clip === 0 ? "#ee4444" : clip <= 5 ? "#ffcc66" : "#ffffff";
+    this.ammoEl.innerHTML =
+      `<span style="color:${color}">${clip}</span>` +
+      `<span style="font-size:15px;opacity:.7"> / ${reserve}</span>`;
+  }
+
+  /** Set the current weapon name label. */
+  setWeapon(name: string): void {
+    this.weaponEl.textContent = name;
+  }
+
+  /** Show/hide the sniper scope overlay (on ADS with a scoped weapon). */
+  setScope(active: boolean): void {
+    this.scopeEl.style.display = active ? "block" : "none";
   }
 
   /** Update the health bar from the local player's hp (0..MAX_HP). */

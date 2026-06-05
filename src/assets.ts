@@ -7,7 +7,8 @@ type GltfKey =
   | "character" | "gun" | "crate" | "barrel" | "container" | "rock" | "tree"
   | "grass" | "bush" | "fern" | "fence" | "log"
   | "kitWall" | "kitDoor" | "kitFloor" | "kitStairs" | "kitColumn" | "kitBroken"
-  | "bTower" | "bHouse1" | "bHouse2" | "bShed" | "bShed2";
+  | "bTower" | "bHouse1" | "bHouse2" | "bShed" | "bShed2"
+  | "grenade";
 
 export interface AssetRegistry {
   character: GLTF | null;
@@ -35,6 +36,7 @@ export interface AssetRegistry {
   bHouse2: GLTF | null;
   bShed: GLTF | null;
   bShed2: GLTF | null;
+  grenade: GLTF | null;
   textures: { grass: THREE.Texture | null; stone: THREE.Texture | null };
 }
 
@@ -62,6 +64,7 @@ const FILES: Record<GltfKey, string> = {
   bHouse2: "/models/building_house2.glb",
   bShed: "/models/building_shed.glb",
   bShed2: "/models/building_shed2.glb",
+  grenade: "/models/grenade.glb",
 };
 
 const TEXTURES: Record<"grass" | "stone", string> = {
@@ -98,7 +101,7 @@ export async function loadAssets(onProgress?: (loaded: number, total: number, la
     character: null, gun: null, crate: null, barrel: null, container: null, rock: null, tree: null,
     grass: null, bush: null, fern: null, fence: null, log: null,
     kitWall: null, kitDoor: null, kitFloor: null, kitStairs: null, kitColumn: null, kitBroken: null,
-    bTower: null, bHouse1: null, bHouse2: null, bShed: null, bShed2: null,
+    bTower: null, bHouse1: null, bHouse2: null, bShed: null, bShed2: null, grenade: null,
     textures: { grass: null, stone: null },
   };
 

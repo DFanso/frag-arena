@@ -22,13 +22,15 @@ import type {
   MatchOverMsg,
   LobbyMsg,
   LobbyPlayer,
+  GrenadeMsg,
 } from "../worker/protocol";
 import { Net } from "./net";
 import { buildArena } from "./map";
 import { buildOctree } from "./physics";
 import { FpsControls } from "./controls";
 import { LocalPlayer, RemotePlayer } from "./player";
-import { wireShooting } from "./combat";
+import { WeaponController } from "./weapons";
+import { Grenades } from "./projectiles";
 import { Hud } from "./hud";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
@@ -236,16 +238,16 @@ async function main(): Promise<void> {
   // Scene + sky + lights (v1.1 — replaced v1 flat ambient/basic lighting).
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x9fc4e8);
-  scene.fog = new THREE.Fog(0x9fc4e8, 80, 180);
+  scene.fog = new THREE.Fog(0x9fc4e8, 160, 340);
   const hemi = new THREE.HemisphereLight(0xbfe3ff, 0x4a5a3a, 0.9);
   scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xfff2d8, 1.1);
   sun.position.set(30, 50, 20);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -55; sun.shadow.camera.right = 55;
-  sun.shadow.camera.top = 55; sun.shadow.camera.bottom = -55;
-  sun.shadow.camera.far = 220;
+  sun.shadow.camera.left = -95; sun.shadow.camera.right = 95;
+  sun.shadow.camera.top = 95; sun.shadow.camera.bottom = -95;
+  sun.shadow.camera.far = 300;
   scene.add(sun);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -270,13 +272,18 @@ async function main(): Promise<void> {
   loading.done(); // assets + arena ready — reveal the game
 
   // Controls, HUD, SFX. LocalPlayer is created once we know our id (on welcome).
-  const controls = new FpsControls(camera, renderer.domElement, octree);
+  const controls = new FpsControls(camera, renderer.domElement, octree, arena.ladders);
   const hud = new Hud();
   const sfx = new Sfx();
   let local: LocalPlayer | undefined;
 
   // First-person weapon viewmodel (attached to camera).
+  // #6 (first-person arms): the CC0 arms rig doesn't align to this gun without a viewmodel
+  // redesign / matched asset — deferred. Gun-only viewmodel for now (arms code-path dormant).
   const viewmodel = new Viewmodel(camera, reg.gun);
+
+  // Thrown-grenade visuals + explosion FX (damage is server-authoritative via HitMsg).
+  const grenades = new Grenades(scene, reg.grenade, () => sfx.explosion());
 
   // Death state tracking.
   let deadUntil = 0;
@@ -299,6 +306,7 @@ async function main(): Promise<void> {
   let matchEndsAt = 0;     // server epoch ms the match ends (0 = no active match)
   let latestSnapTs = 0;    // server clock from the latest snap (skew-free timer reference)
   let phase: "lobby" | "match" = "lobby"; // start in the ready-up lobby
+  let shootHandle: WeaponController | undefined; // weapons / ammo / reload / ADS owner
 
   function nameOf(id: number): string {
     return latestSnap.find((p) => p.id === id)?.name ?? "";
@@ -387,6 +395,7 @@ async function main(): Promise<void> {
       hud.setHealth(MAX_HP);
       hud.hideDeath();
       controls.setPosition(m.p);
+      shootHandle?.reset(); // refill magazine + reserve on (re)spawn
     } else {
       // A remote respawned: reappear at the spawn point (no slide from the death spot).
       const rp = remotes.get(m.id);
@@ -404,6 +413,10 @@ async function main(): Promise<void> {
       rp.dispose();
       remotes.delete(m.id);
     }
+  });
+
+  net.on("grenade", (m: GrenadeMsg) => {
+    grenades.spawn(m.o, m.v, m.fuseMs);
   });
 
   net.on("matchstart", (m: MatchStartMsg) => {
@@ -426,21 +439,26 @@ async function main(): Promise<void> {
     hud.showResults(m.standings, myId, () => hud.hideResults());
   });
 
-  // ---- shooting (single owner: combat.wireShooting — D15) -------------------
+  // ---- weapons (fire / reload / switch / ADS — single owner) ----------------
 
-  wireShooting({
+  shootHandle = new WeaponController({
     camera,
     dom: renderer.domElement,
     getTargets: () => [...remotes.values()].map((rp) => rp.body),
     isLocked: () => controls.isLocked,
     nextSeq: () => (local ? local.nextSeq() : 0),
     send: (m) => net.send(m),
+    baseFov: camera.fov,
     onLocalShoot: (hit) => {
       sfx.shoot();
       viewmodel.recoil();
       viewmodel.flash();
       if (hit) hud.flashHitMarker();
     },
+    onAmmo: (clip, reserve, reloading) => hud.setAmmo(clip, reserve, reloading),
+    onWeapon: (name) => hud.setWeapon(name),
+    onScope: (active) => hud.setScope(active),
+    sfx: { shoot: () => sfx.shoot(), reload: () => sfx.reload(), dryFire: () => sfx.dryFire() },
   });
 
   // ---- resize --------------------------------------------------------------
@@ -488,6 +506,7 @@ async function main(): Promise<void> {
     // time; RemotePlayer.update subtracts INTERP_DELAY_MS itself (don't double-subtract).
     const nowEpoch = Date.now();
     for (const rp of remotes.values()) rp.update(nowEpoch, dtMs);
+    grenades.update(dt);
 
     // Update viewmodel (recoil ease + muzzle flash).
     viewmodel.update(dtMs);
