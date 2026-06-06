@@ -7,6 +7,8 @@ import {
   CLIENT_SEND_MS,
   EYE_HEIGHT,
   ST_DEAD,
+  GRENADE_START,
+  BARREL_RADIUS,
   sanitizeRoom,
   sanitizeName,
 } from "../worker/protocol";
@@ -25,6 +27,12 @@ import type {
   GrenadeMsg,
   PickupMsg,
   BarrelMsg,
+  RocketFxMsg,
+  WeaponPickupMsg,
+  GrenadePickupMsg,
+  HealthPickupMsg,
+  ArmorPickupMsg,
+  SpringPickupMsg,
 } from "../worker/protocol";
 import { Net } from "./net";
 import { buildArena } from "./map";
@@ -33,8 +41,10 @@ import { FpsControls } from "./controls";
 import { LocalPlayer, RemotePlayer } from "./player";
 import { WeaponController } from "./weapons";
 import { Grenades } from "./projectiles";
-import { AmmoPickups } from "./pickups";
+import { AmmoPickups, GrenadePickups, RocketPickups, HealthPickups, ArmorPickups, SpringPickups } from "./pickups";
 import { Barrels } from "./barrels";
+import { Blood } from "./blood";
+import { Doors } from "./doors";
 import { Hud } from "./hud";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
@@ -239,20 +249,24 @@ async function main(): Promise<void> {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
 
-  // Scene + sky + lights (v1.1 — replaced v1 flat ambient/basic lighting).
+  // Scene + sky + lights — haunted Cold-War overcast dusk: dark desaturated gray-green sky,
+  // dense cold fog, dim cold hemisphere fill, and a low pale sun for long oppressive shadows.
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x9fc4e8);
-  scene.fog = new THREE.Fog(0x9fc4e8, 160, 340);
-  const hemi = new THREE.HemisphereLight(0xbfe3ff, 0x4a5a3a, 0.9);
+  const SKY = 0x343a3a;
+  scene.background = new THREE.Color(SKY);
+  scene.fog = new THREE.Fog(SKY, 50, 230);
+  const hemi = new THREE.HemisphereLight(0x5a6a72, 0x24261f, 0.55);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xfff2d8, 1.1);
-  sun.position.set(30, 50, 20);
+  const sun = new THREE.DirectionalLight(0xb8b6a4, 0.6); // low pale cold sun
+  sun.position.set(40, 26, 26);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -95; sun.shadow.camera.right = 95;
-  sun.shadow.camera.top = 95; sun.shadow.camera.bottom = -95;
-  sun.shadow.camera.far = 300;
+  sun.shadow.camera.left = -120; sun.shadow.camera.right = 120;
+  sun.shadow.camera.top = 120; sun.shadow.camera.bottom = -120;
+  sun.shadow.camera.far = 360;
   scene.add(sun);
+  // A faint cold ambient so deep shadows / interiors don't crush to pure black.
+  scene.add(new THREE.AmbientLight(0x3a4248, 0.35));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -273,6 +287,9 @@ async function main(): Promise<void> {
   const arena = buildArena(reg);
   scene.add(arena.visual);
   const octree = buildOctree(arena.collision);
+  // The collision group isn't added to the scene; update its world matrices once so the rocket
+  // impact raycast (which casts against this static geometry) sees correct transforms.
+  arena.collision.updateMatrixWorld(true);
   loading.done(); // assets + arena ready — reveal the game
 
   // Controls, HUD, SFX. LocalPlayer is created once we know our id (on welcome).
@@ -281,14 +298,44 @@ async function main(): Promise<void> {
   const sfx = new Sfx();
   let local: LocalPlayer | undefined;
 
-  // First-person viewmodel: gun + procedural arms gripping it (#6).
+  // Hard landings claim fall damage from the server + kick the camera.
+  controls.onFall((dmg) => {
+    net.send({ t: "fall", dmg });
+    sfx.hit();
+  });
+
+  // First-person viewmodel: weapon + procedural arms gripping it.
   const viewmodel = new Viewmodel(camera, reg.gun);
 
-  // Thrown-grenade visuals + explosion FX (damage is server-authoritative via HitMsg).
-  const grenades = new Grenades(scene, reg.grenade, () => sfx.explosion());
+  // Thrown-grenade visuals + explosion FX. Every blast (grenade/rocket/barrel) funnels through
+  // this callback, so it also shakes the camera when the detonation is near the local player.
+  const grenades = new Grenades(scene, reg.grenade, (p) => {
+    sfx.explosion();
+    const me = controls.getPosition();
+    const d = Math.hypot(p[0] - me[0], p[1] - me[1], p[2] - me[2]);
+    if (d < 22) controls.addShake(0.5 * (1 - d / 22));
+  });
 
   // Ammo crate pickups (server-authoritative refill; this renders + animates the crates).
   const pickups = new AmmoPickups(scene);
+
+  // Grenade pickups + rocket launchers (both non-center towers) + health / armor / spring pickups.
+  const grenadePickups = new GrenadePickups(scene, reg.grenade);
+  const rocketPickups = new RocketPickups(scene);
+  const healthPickups = new HealthPickups(scene);
+  const armorPickups = new ArmorPickups(scene);
+  const springPickups = new SpringPickups(scene);
+
+  // Interactive building doors (open/close with E; closed doors collide via a dynamic octree).
+  const doors = new Doors(scene, arena.doors);
+  controls.setDoorOctree(doors.getOctree());
+  controls.onUse((pos) => {
+    const i = doors.nearest(pos);
+    if (i >= 0) controls.setDoorOctree(doors.toggle(i));
+  });
+
+  // Blood spray on hits + gib pieces on explosion kills.
+  const blood = new Blood(scene);
 
   // Explosive barrels (shoot to detonate; server validates + applies AoE).
   const barrels = new Barrels(scene, reg.barrel);
@@ -313,6 +360,7 @@ async function main(): Promise<void> {
   let latestSnap: PlayerSnap[] = [];
   let matchEndsAt = 0;     // server epoch ms the match ends (0 = no active match)
   let latestSnapTs = 0;    // server clock from the latest snap (skew-free timer reference)
+  let clockOffset = 0;     // serverNow ≈ Date.now() + clockOffset (drives pickup respawn timing)
   let phase: "lobby" | "match" = "lobby"; // start in the ready-up lobby
   let shootHandle: WeaponController | undefined; // weapons / ammo / reload / ADS owner
 
@@ -356,10 +404,13 @@ async function main(): Promise<void> {
   net.on("snap", (m: SnapMsg) => {
     latestSnap = m.players;
     latestSnapTs = m.ts;
+    clockOffset = m.ts - Date.now(); // estimate the server clock for skew-free pickup respawns
     hud.setPlayers(m.players);
     for (const ps of m.players) {
       if (ps.id === myId) {
         hud.setHealth(ps.hp);
+        hud.setGrenades(ps.g ?? 0);
+        hud.setArmor(ps.a ?? 0);
         // Reconcile local prediction against the server POSITION only (never rotation).
         if (local !== undefined) {
           const snapped = local.reconcile(controls.getPosition(), ps.p);
@@ -372,15 +423,26 @@ async function main(): Promise<void> {
         rp.setVelocity(ps.v);
         rp.setHealth(ps.hp);
         rp.setCrouch(ps.c ?? false);
+        rp.setParachute(ps.pc ?? false);
       }
     }
   });
 
   net.on("hit", (m: HitMsg) => {
-    if (m.on === myId) hud.setHealth(m.hp);
+    if (m.on === myId) {
+      hud.setHealth(m.hp);
+      hud.flashDamage();      // red screen vignette
+      controls.addShake(0.12);
+    }
     if (m.by === myId) {
       hud.flashHitMarker();
       sfx.hit();
+    }
+    // Blood spray at the victim (remote players only — the local player has no mesh).
+    const victim = remotes.get(m.on);
+    if (victim) {
+      const p = victim.group.position;
+      blood.spray([p.x, p.y + 1.1, p.z], m.head ? 1.5 : 1);
     }
     // Trigger shoot cue on the remote who fired.
     remotes.get(m.by)?.playShoot();
@@ -392,6 +454,14 @@ async function main(): Promise<void> {
       sfx.death();
       hud.showDeath(nameOf(m.by));
       deadUntil = performance.now() + RESPAWN_MS;
+      shootHandle?.setAlive(false); // stop the corpse from firing during the respawn window
+    }
+    // Gib the victim into bloody pieces on an explosion kill; otherwise a final blood spray.
+    const victim = remotes.get(m.on);
+    if (victim) {
+      const p = victim.group.position;
+      if (m.blast) blood.gib([p.x, p.y + 0.9, p.z]);
+      else blood.spray([p.x, p.y + 1.1, p.z], 1.6);
     }
     // The victim vanishes immediately (don't wait for the next snapshot).
     remotes.get(m.on)?.setAlive(false);
@@ -402,9 +472,12 @@ async function main(): Promise<void> {
   net.on("spawn", (m: SpawnMsg) => {
     if (m.id === myId) {
       hud.setHealth(MAX_HP);
+      hud.setGrenades(GRENADE_START); // instant feedback; snapshots then confirm
+      hud.setArmor(0);
       hud.hideDeath();
       controls.setPosition(m.p);
-      shootHandle?.reset(); // refill magazine + reserve on (re)spawn
+      shootHandle?.reset(); // refill magazine + reserve on (re)spawn (also drops the rocket launcher)
+      shootHandle?.setAlive(true);
     } else {
       // A remote respawned: reappear at the spawn point (no slide from the death spot).
       const rp = remotes.get(m.id);
@@ -429,15 +502,42 @@ async function main(): Promise<void> {
   });
 
   net.on("pickup", (m: PickupMsg) => {
-    pickups.setAvailable(m.id, false);
-    setTimeout(() => pickups.setAvailable(m.id, true), Math.max(0, m.availableAt - Date.now()));
+    pickups.setTaken(m.id, m.availableAt); // self-managing respawn (no stale setTimeout)
     if (m.by === myId) { shootHandle?.refillReserve(); sfx.pickup(); }
   });
 
   net.on("barrel", (m: BarrelMsg) => {
-    barrels.setAvailable(m.id, false);
-    grenades.blast(m.pos); // explosion FX + sound at the barrel
-    setTimeout(() => barrels.setAvailable(m.id, true), Math.max(0, m.respawnAt - Date.now()));
+    barrels.setTaken(m.id, m.respawnAt);
+    grenades.blast(m.pos, BARREL_RADIUS); // explosion FX + sound at the barrel
+  });
+
+  net.on("rocketfx", (m: RocketFxMsg) => {
+    grenades.spawnRocket(m.o, m.d, m.p, m.travelMs); // render the rocket flying to its blast
+  });
+
+  net.on("weaponpickup", (m: WeaponPickupMsg) => {
+    rocketPickups.setTaken(m.id, m.availableAt); // hide the launcher on the specific tower
+    if (m.by === myId) { shootHandle?.grantRocket(); sfx.pickup(); }
+  });
+
+  net.on("gpickup", (m: GrenadePickupMsg) => {
+    grenadePickups.setTaken(m.id, m.availableAt);
+    if (m.by === myId) sfx.pickup();
+  });
+
+  net.on("hpickup", (m: HealthPickupMsg) => {
+    healthPickups.setTaken(m.id, m.availableAt);
+    if (m.by === myId) sfx.pickup();
+  });
+
+  net.on("apickup", (m: ArmorPickupMsg) => {
+    armorPickups.setTaken(m.id, m.availableAt);
+    if (m.by === myId) sfx.pickup();
+  });
+
+  net.on("sppickup", (m: SpringPickupMsg) => {
+    springPickups.setTaken(m.id, m.availableAt);
+    if (m.by === myId) { controls.grantSpring(m.durationMs); sfx.pickup(); }
   });
 
   net.on("matchstart", (m: MatchStartMsg) => {
@@ -448,7 +548,16 @@ async function main(): Promise<void> {
     hud.hideDeath();
     deadUntil = 0;
     pickups.showAll();
+    grenadePickups.showAll();
+    rocketPickups.showAll();
+    healthPickups.showAll();
+    armorPickups.showAll();
+    springPickups.showAll();
     barrels.showAll();
+    hud.setGrenades(GRENADE_START);
+    hud.setRocket(false);
+    hud.setArmor(0);
+    hud.setSpring(0);
   });
 
   net.on("matchover", (m: MatchOverMsg) => {
@@ -468,6 +577,7 @@ async function main(): Promise<void> {
     camera,
     dom: renderer.domElement,
     getTargets: () => [...[...remotes.values()].map((rp) => rp.body), ...barrels.getTargets()],
+    getWorldTargets: () => [arena.collision], // arena geometry, so rockets explode on walls/floor
     isLocked: () => controls.isLocked,
     nextSeq: () => (local ? local.nextSeq() : 0),
     send: (m) => net.send(m),
@@ -479,8 +589,9 @@ async function main(): Promise<void> {
       if (hit) hud.flashHitMarker();
     },
     onAmmo: (clip, reserve, reloading) => hud.setAmmo(clip, reserve, reloading),
-    onWeapon: (name) => hud.setWeapon(name),
+    onWeapon: (name, id) => { hud.setWeapon(name); viewmodel.setWeapon(id); },
     onScope: (active) => hud.setScope(active),
+    onRocket: (has) => hud.setRocket(has),
     sfx: { shoot: () => sfx.shoot(), reload: () => sfx.reload(), dryFire: () => sfx.dryFire() },
   });
 
@@ -506,6 +617,7 @@ async function main(): Promise<void> {
         controls.getVelocity(),
         Date.now(),
         controls.isCrouching,
+        controls.isParachuting(),
       );
       net.send(msg);
       return 0;
@@ -529,9 +641,28 @@ async function main(): Promise<void> {
     // Update remote players (interpolation + animation mixer). Pass the current epoch
     // time; RemotePlayer.update subtracts INTERP_DELAY_MS itself (don't double-subtract).
     const nowEpoch = Date.now();
+    const serverNow = nowEpoch + clockOffset; // server-clock estimate for pickup respawn timing
     for (const rp of remotes.values()) rp.update(nowEpoch, dtMs);
     grenades.update(dt);
-    pickups.update(dt, nowEpoch);
+    blood.update(dt);
+    doors.update(dt);
+    pickups.update(dt, serverNow);
+    grenadePickups.update(dt, serverNow);
+    rocketPickups.update(dt, serverNow);
+    healthPickups.update(dt, serverNow);
+    armorPickups.update(dt, serverNow);
+    springPickups.update(dt, serverNow);
+    barrels.update(serverNow);
+
+    // HUD meters + contextual hints (spring timer / parachute + zipline + door prompts).
+    hud.setSpring(controls.springRemainingMs());
+    hud.setHint(
+      controls.isParachuting() ? "Parachute open — E to cut"
+      : controls.canParachute() ? "Press E — parachute"
+      : (controls.isGrounded && doors.nearest(controls.getPosition()) >= 0) ? "Press E — door"
+      : controls.nearZipline() ? "Press F — zipline"
+      : "",
+    );
 
     // Auto-fire (hold-to-shoot for full-auto weapons) + viewmodel recoil/flash ease.
     shootHandle?.update();

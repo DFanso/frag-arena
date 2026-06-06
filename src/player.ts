@@ -31,7 +31,7 @@ export class LocalPlayer {
   }
 
   // Build the next InMsg from explicit p/r/v + timestamp, bumping the seq counter.
-  buildInput(p: Vec3, r: Rot, v: Vec3, tsMs: number, crouch = false): InMsg {
+  buildInput(p: Vec3, r: Rot, v: Vec3, tsMs: number, crouch = false, parachute = false): InMsg {
     return {
       t: "in",
       seq: this.nextSeq(),
@@ -40,6 +40,7 @@ export class LocalPlayer {
       r: [r[0], r[1]],
       v: [v[0], v[1], v[2]],
       c: crouch,
+      pc: parachute,
     };
   }
 
@@ -70,6 +71,7 @@ export class RemotePlayer {
   private speedXZ = 0;
   private shootingUntil = 0;
   private crouching = false;
+  private parachute!: THREE.Group;
 
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Record<string, THREE.AnimationAction> = {};
@@ -161,6 +163,29 @@ export class RemotePlayer {
     this.healthBar.userData.noHit = true;
     this.group.add(this.healthBar);
     this.drawHealth(MAX_HP);
+
+    // Parachute canopy (hidden until deployed), floating above the head.
+    this.parachute = new THREE.Group();
+    const canopy = new THREE.Mesh(
+      new THREE.SphereGeometry(1.7, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color: 0xdd4422, side: THREE.DoubleSide, roughness: 0.9 }),
+    );
+    canopy.position.y = 3.5;
+    this.parachute.add(canopy);
+    for (const sx of [-1, 1]) {
+      const line = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.9, 4), new THREE.MeshStandardMaterial({ color: 0x222226 }));
+      line.position.set(sx * 0.6, 2.55, 0);
+      line.rotation.z = sx * 0.32;
+      this.parachute.add(line);
+    }
+    this.parachute.visible = false;
+    this.parachute.traverse((o) => { o.userData.noHit = true; });
+    this.group.add(this.parachute);
+  }
+
+  // Show/hide this remote's parachute canopy (driven by the snapshot `pc` flag).
+  setParachute(open: boolean): void {
+    this.parachute.visible = open;
   }
 
   // Redraw the health bar canvas (dark track + colored fill proportional to hp).

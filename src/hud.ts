@@ -1,5 +1,5 @@
 // src/hud.ts — HUD overlay: crosshair, health bar, prompt, scoreboard, kill feed, hit marker.
-import { MAX_HP } from "../worker/protocol";
+import { MAX_HP, MAX_ARMOR, SPRING_DURATION_MS } from "../worker/protocol";
 import type { PlayerSnap, KillMsg, Standing } from "../worker/protocol";
 import { countdownText, deathMessage } from "./death-ui";
 import { formatClock } from "./match-ui";
@@ -36,8 +36,19 @@ export class Hud {
   private root: HTMLDivElement;
   private healthFill: HTMLDivElement;
   private healthText: HTMLSpanElement;
+  private armorWrap!: HTMLDivElement;
+  private armorFill!: HTMLDivElement;
+  private springEl!: HTMLDivElement;
+  private springFill!: HTMLDivElement;
+  private springLabel!: HTMLSpanElement;
+  private hintEl!: HTMLDivElement;
+  private damageVignette!: HTMLDivElement;
+  private dmgTimer: ReturnType<typeof setTimeout> | undefined;
   private ammoEl: HTMLDivElement;
   private weaponEl: HTMLDivElement;
+  private grenadeEl: HTMLDivElement;
+  private rocketBannerEl: HTMLDivElement;
+  private rocketBannerTimer: ReturnType<typeof setTimeout> | undefined;
   private scopeEl: HTMLDivElement;
   private prompt: HTMLDivElement;
   private hitMarker: HTMLDivElement;
@@ -99,6 +110,51 @@ export class Hud {
     this.healthFill = fill;
     this.healthText = text;
 
+    // Armor bar (thin blue bar just above the health bar; hidden at 0 armor).
+    const armorWrap = document.createElement("div");
+    armorWrap.style.cssText =
+      "position:absolute;left:18px;bottom:44px;width:240px;height:10px;display:none;" +
+      "background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.2);";
+    const armorFill = document.createElement("div");
+    armorFill.style.cssText = "height:100%;width:0%;background:#2e72d2;transition:width .1s;";
+    armorWrap.appendChild(armorFill);
+    root.appendChild(armorWrap);
+    this.armorWrap = armorWrap;
+    this.armorFill = armorFill;
+
+    // Spring-boots meter (a draining bar that appears while the boots are active).
+    const spring = document.createElement("div");
+    spring.style.cssText =
+      "position:absolute;left:18px;bottom:84px;width:170px;height:16px;display:none;" +
+      "background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.2);border-radius:3px;overflow:hidden;";
+    const springFill = document.createElement("div");
+    springFill.style.cssText = "position:absolute;inset:0;width:100%;background:linear-gradient(90deg,#1f9d55,#7CFC9A);transition:width .1s;";
+    const springLabel = document.createElement("span");
+    springLabel.style.cssText = "position:absolute;left:6px;top:1px;color:#062;font:700 12px monospace;";
+    spring.appendChild(springFill);
+    spring.appendChild(springLabel);
+    root.appendChild(spring);
+    this.springEl = spring;
+    this.springFill = springFill;
+    this.springLabel = springLabel;
+
+    // Contextual hint (parachute / zipline prompts), bottom-center.
+    const hint = document.createElement("div");
+    hint.style.cssText =
+      "position:absolute;left:50%;bottom:120px;transform:translateX(-50%);color:#fff;" +
+      "font:700 16px monospace;text-shadow:0 2px 4px #000;background:rgba(0,0,0,.4);" +
+      "padding:4px 12px;border-radius:5px;display:none;";
+    root.appendChild(hint);
+    this.hintEl = hint;
+
+    // Damage vignette (red screen edges flashed on taking a hit).
+    const vign = document.createElement("div");
+    vign.style.cssText =
+      "position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .25s;" +
+      "box-shadow:inset 0 0 140px 42px rgba(170,0,0,.85);z-index:23;";
+    root.appendChild(vign);
+    this.damageVignette = vign;
+
     // Ammo counter (bottom-right): "clip / reserve" or "RELOADING…".
     const ammo = document.createElement("div");
     ammo.style.cssText =
@@ -114,6 +170,23 @@ export class Hud {
       "text-shadow:0 1px 2px #000;text-align:right;opacity:.85;";
     root.appendChild(weaponLbl);
     this.weaponEl = weaponLbl;
+
+    // Grenade count (above the weapon label).
+    const grenades = document.createElement("div");
+    grenades.style.cssText =
+      "position:absolute;right:24px;bottom:80px;color:#dfe;font:600 15px monospace;" +
+      "text-shadow:0 1px 2px #000;text-align:right;";
+    root.appendChild(grenades);
+    this.grenadeEl = grenades;
+
+    // Rocket-launcher pickup banner (top-center, below the match timer; transient).
+    const rocketBanner = document.createElement("div");
+    rocketBanner.style.cssText =
+      "position:absolute;left:50%;top:54px;transform:translateX(-50%);display:none;" +
+      "color:#ffd9a0;font:700 20px monospace;text-shadow:0 2px 4px #000;" +
+      "background:rgba(60,20,0,.5);padding:4px 16px;border-radius:6px;white-space:nowrap;";
+    root.appendChild(rocketBanner);
+    this.rocketBannerEl = rocketBanner;
 
     // Sniper scope overlay (hidden until ADS with a scoped weapon). Clear center circle,
     // dark surround, thin reticle lines; the normal crosshair shows through the center.
@@ -133,7 +206,7 @@ export class Hud {
     prompt.style.cssText =
       "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
       "background:rgba(0,0,0,.55);color:#fff;font-size:24px;text-align:center;";
-    prompt.textContent = "Click to play  ·  WASD move · Shift sprint · C crouch · Space jump · Hold to fire · Right-click aim · R reload · 1/2 weapon · G grenade · Tab scores";
+    prompt.textContent = "Click to play  ·  WASD move · Shift sprint · Ctrl/C crouch · Space jump · Hold to fire · Right-click aim · R reload · Wheel/1·2·3 weapon · G grenade · E parachute · F zipline · Grab the rocket launcher atop the tower · Tab scores";
     root.appendChild(prompt);
     this.prompt = prompt;
 
@@ -214,9 +287,58 @@ export class Hud {
     this.weaponEl.textContent = name;
   }
 
+  /** Update the grenade-count indicator. */
+  setGrenades(n: number): void {
+    this.grenadeEl.textContent = `🧨 ${n}`;
+  }
+
+  /** Show a transient pickup banner when the rocket launcher is gained; hide it when lost. */
+  setRocket(has: boolean): void {
+    if (this.rocketBannerTimer !== undefined) {
+      clearTimeout(this.rocketBannerTimer);
+      this.rocketBannerTimer = undefined;
+    }
+    if (has) {
+      this.rocketBannerEl.textContent = "🚀 ROCKET LAUNCHER — 3 rockets!";
+      this.rocketBannerEl.style.display = "block";
+      this.rocketBannerTimer = setTimeout(() => { this.rocketBannerEl.style.display = "none"; }, 2600);
+    } else {
+      this.rocketBannerEl.style.display = "none";
+    }
+  }
+
   /** Show/hide the sniper scope overlay (on ADS with a scoped weapon). */
   setScope(active: boolean): void {
     this.scopeEl.style.display = active ? "block" : "none";
+  }
+
+  /** Update the armor bar (0..MAX_ARMOR); hidden at 0. */
+  setArmor(a: number): void {
+    if (a <= 0) { this.armorWrap.style.display = "none"; return; }
+    this.armorWrap.style.display = "block";
+    this.armorFill.style.width = `${Math.max(0, Math.min(1, a / MAX_ARMOR)) * 100}%`;
+  }
+
+  /** Show the spring-boots draining meter (ms remaining); hidden at 0. */
+  setSpring(remainingMs: number): void {
+    if (remainingMs <= 0) { this.springEl.style.display = "none"; return; }
+    this.springEl.style.display = "block";
+    this.springFill.style.width = `${Math.max(0, Math.min(1, remainingMs / SPRING_DURATION_MS)) * 100}%`;
+    this.springLabel.textContent = `⤴ ${(remainingMs / 1000).toFixed(1)}s`;
+  }
+
+  /** Show/hide a contextual hint (pass "" to hide). */
+  setHint(text: string): void {
+    if (!text) { this.hintEl.style.display = "none"; return; }
+    this.hintEl.style.display = "block";
+    this.hintEl.textContent = text;
+  }
+
+  /** Flash the red damage vignette (call when the local player takes a hit). */
+  flashDamage(): void {
+    this.damageVignette.style.opacity = "1";
+    if (this.dmgTimer !== undefined) clearTimeout(this.dmgTimer);
+    this.dmgTimer = setTimeout(() => { this.damageVignette.style.opacity = "0"; }, 130);
   }
 
   /** Update the health bar from the local player's hp (0..MAX_HP). */
@@ -356,6 +478,8 @@ export class Hud {
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
     if (this.hitMarkerTimer !== undefined) clearTimeout(this.hitMarkerTimer);
+    if (this.rocketBannerTimer !== undefined) clearTimeout(this.rocketBannerTimer);
+    if (this.dmgTimer !== undefined) clearTimeout(this.dmgTimer);
     this.root.remove();
     this.resultsEl.remove();
   }

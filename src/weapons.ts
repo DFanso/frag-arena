@@ -2,21 +2,23 @@
 // switching (1/2), reload (R / auto), and aim-down-sights (right mouse → FOV zoom + scope).
 // Ammo is client-predicted for instant HUD feedback; the server enforces it authoritatively.
 import * as THREE from "three";
-import { WEAPONS, GRENADE_COOLDOWN_MS, type ShootMsg, type ReloadMsg, type ThrowMsg } from "../worker/protocol";
-import { fireRay } from "./combat";
+import { WEAPONS, GRENADE_COOLDOWN_MS, ROCKET_ID, ROCKET_CLIP, type ShootMsg, type ReloadMsg, type ThrowMsg, type RocketMsg } from "../worker/protocol";
+import { fireRay, fireRocket } from "./combat";
 
 export interface WeaponDeps {
   camera: THREE.PerspectiveCamera;
   dom: HTMLElement;
-  getTargets: () => THREE.Object3D[];
+  getTargets: () => THREE.Object3D[];      // player proxies + barrels (hitscan + rocket entities)
+  getWorldTargets: () => THREE.Object3D[]; // arena collision geometry (rocket impact on walls/floor)
   isLocked: () => boolean;
   nextSeq: () => number;
-  send: (m: ShootMsg | ReloadMsg | ThrowMsg) => void;
+  send: (m: ShootMsg | ReloadMsg | ThrowMsg | RocketMsg) => void;
   baseFov: number;
   onLocalShoot: (hit: boolean) => void;
   onAmmo: (clip: number, reserve: number, reloading: boolean) => void;
   onWeapon: (name: string, id: number) => void;
   onScope: (active: boolean) => void;
+  onRocket: (has: boolean) => void;        // rocket launcher gained / lost (HUD pickup banner)
   sfx: { shoot(): void; reload(): void; dryFire(): void };
 }
 
@@ -30,10 +32,13 @@ export class WeaponController {
   private lastThrow = 0;
   private firing = false;   // left mouse button held
   private lastFireAt = 0;   // performance.now() of the last shot (client fire-rate gate)
+  private hasRocket = false; // currently holding the rocket launcher (tower pickup)
+  private dead = false;     // local player is dead (block firing/throwing until respawn)
 
   private readonly onMouseDown: (e: MouseEvent) => void;
   private readonly onMouseUp: (e: MouseEvent) => void;
   private readonly onKeyDown: (e: KeyboardEvent) => void;
+  private readonly onWheel: (e: WheelEvent) => void;
   private readonly onCtx: (e: Event) => void;
   private readonly onLock: () => void;
 
@@ -52,19 +57,49 @@ export class WeaponController {
       if (e.code === "KeyR") this.startReload(this.cur);
       else if (e.code === "Digit1") this.switchTo(0);
       else if (e.code === "Digit2") this.switchTo(1);
+      else if (e.code === "Digit3") this.switchTo(ROCKET_ID); // ignored unless holding the launcher
       else if (e.code === "KeyG") this.throwGrenade();
     };
+    // Mouse wheel cycles through the weapons you currently hold (rocket joins only when held).
+    this.onWheel = (e) => { if (d.isLocked()) this.cycle(e.deltaY > 0 ? 1 : -1); };
     this.onCtx = (e) => e.preventDefault();
     this.onLock = () => { if (!d.isLocked()) { this.setADS(false); this.firing = false; } };
+
+    this.clip[ROCKET_ID] = 0; // the rocket launcher starts un-held (no rockets until picked up)
 
     d.dom.addEventListener("mousedown", this.onMouseDown);
     window.addEventListener("mouseup", this.onMouseUp);
     window.addEventListener("keydown", this.onKeyDown);
+    window.addEventListener("wheel", this.onWheel, { passive: true });
     d.dom.addEventListener("contextmenu", this.onCtx);
     document.addEventListener("pointerlockchange", this.onLock);
 
     this.emit();
     d.onWeapon(WEAPONS[0]!.name, 0);
+  }
+
+  // The weapon ids the player can currently switch among (rocket only while held).
+  private availableWeapons(): number[] {
+    const list = [0, 1];
+    if (this.hasRocket) list.push(ROCKET_ID);
+    return list;
+  }
+
+  // Cycle the current weapon by `dir` (+1 next / -1 prev) within the available set.
+  private cycle(dir: number): void {
+    const avail = this.availableWeapons();
+    const i = avail.indexOf(this.cur);
+    const next = avail[(((i < 0 ? 0 : i) + dir) % avail.length + avail.length) % avail.length]!;
+    this.switchTo(next);
+  }
+
+  // Grant the rocket launcher (tower pickup): refill to ROCKET_CLIP and switch to it.
+  grantRocket(): void {
+    this.hasRocket = true;
+    this.clip[ROCKET_ID] = ROCKET_CLIP;
+    this.reserve[ROCKET_ID] = 0;
+    this.d.onRocket(true);
+    this.switchTo(ROCKET_ID);
   }
 
   private emit(): void {
@@ -96,10 +131,18 @@ export class WeaponController {
     if (this.firing && this.d.isLocked() && WEAPONS[this.cur]!.auto) this.fire();
   }
 
+  // Mark the local player dead/alive — gates firing + throwing so a corpse can't emit messages.
+  setAlive(alive: boolean): void {
+    this.dead = !alive;
+    if (this.dead) this.firing = false;
+  }
+
   private fire(): void {
+    if (this.dead) return;
     const w = this.cur;
     const now = performance.now();
     if (now - this.lastFireAt < WEAPONS[w]!.cooldownMs) return; // client fire-rate gate
+    if (w === ROCKET_ID) { this.fireRocketShot(now); return; }
     if (this.reloading[w]) return;
     if (this.clip[w]! <= 0) { this.d.sfx.dryFire(); this.startReload(w); return; }
     this.lastFireAt = now;
@@ -109,6 +152,24 @@ export class WeaponController {
     this.d.send({ t: "shoot", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, w, hit: res.hit, head: res.head, barrel: res.barrel });
     this.d.onLocalShoot(res.hit !== null);
     if (this.clip[w]! <= 0) this.startReload(w);
+  }
+
+  // Fire one rocket: raycast the impact against entities + world geometry, send it to the
+  // server (which owns the blast), and drop the launcher when the last rocket is spent.
+  private fireRocketShot(now: number): void {
+    if (!this.hasRocket || this.clip[ROCKET_ID]! <= 0) { this.d.sfx.dryFire(); return; }
+    this.lastFireAt = now;
+    this.clip[ROCKET_ID]! -= 1;
+    this.emit();
+    const res = fireRocket(this.d.camera, this.d.getTargets(), this.d.getWorldTargets());
+    this.d.send({ t: "rocket", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, p: res.point, hit: res.hit, barrel: res.barrel });
+    this.d.onLocalShoot(res.hit !== null || res.barrel !== null); // launch sfx + recoil + flash (blast sfx plays on detonation)
+    if (this.clip[ROCKET_ID]! <= 0) {
+      this.hasRocket = false;
+      this.firing = false; // release the trigger so the auto rifle doesn't fire on the same held click
+      this.d.onRocket(false);
+      this.switchTo(0); // out of rockets → fall back to the rifle
+    }
   }
 
   private applyFov(): void {
@@ -124,6 +185,7 @@ export class WeaponController {
   }
 
   private throwGrenade(): void {
+    if (this.dead) return;
     const now = Date.now();
     if (now - this.lastThrow < GRENADE_COOLDOWN_MS) return;
     this.lastThrow = now;
@@ -134,6 +196,7 @@ export class WeaponController {
 
   switchTo(id: number): void {
     if (id < 0 || id >= WEAPONS.length || id === this.cur) return;
+    if (id === ROCKET_ID && !this.hasRocket) return; // can't select a launcher you don't hold
     this.cur = id;
     this.applyFov();
     this.d.onScope(this.ads && WEAPONS[id]!.scoped);
@@ -147,7 +210,8 @@ export class WeaponController {
     this.emit();
   }
 
-  // Refill every weapon and reset to the rifle (called on (re)spawn).
+  // Refill every weapon and reset to the rifle (called on (re)spawn). The rocket launcher is a
+  // tower pickup, so it is LOST on respawn (you must climb the tower again to get another).
   reset(): void {
     for (let w = 0; w < WEAPONS.length; w++) {
       if (this.timers[w]) clearTimeout(this.timers[w]);
@@ -156,6 +220,9 @@ export class WeaponController {
       this.reserve[w] = WEAPONS[w]!.reserveAmmo;
       this.reloading[w] = false;
     }
+    this.hasRocket = false;
+    this.clip[ROCKET_ID] = 0; // un-held until the next tower pickup
+    this.d.onRocket(false);
     this.cur = 0;
     this.ads = false;
     this.lastThrow = 0;
@@ -171,6 +238,7 @@ export class WeaponController {
     this.d.dom.removeEventListener("mousedown", this.onMouseDown);
     window.removeEventListener("mouseup", this.onMouseUp);
     window.removeEventListener("keydown", this.onKeyDown);
+    window.removeEventListener("wheel", this.onWheel);
     this.d.dom.removeEventListener("contextmenu", this.onCtx);
     document.removeEventListener("pointerlockchange", this.onLock);
     for (const t of this.timers) if (t) clearTimeout(t);

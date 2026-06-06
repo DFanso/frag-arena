@@ -1,16 +1,23 @@
-// src/map.ts — 100x100 arena. COLLISION group = invisible solid boxes (Octree source).
-// VISUAL group = grass-textured ground + complete CC0 building models (tower/houses/sheds)
-// placed as SOLID props (collision = model bounds, so you can't clip inside), 2 climbable
-// stone platforms for verticality, low cover props, trees, and foliage. Collision is
-// decoupled from visuals; every model falls back to a box if it fails to load.
+// src/map.ts — 240x240 Cold-War arena. COLLISION group = invisible solid boxes + enterable
+// building walls (Octree source + rocket impact raycast). VISUAL group = ground, 3 climbable
+// towers (center tallest), CLOSED enterable concrete homes (some two-story) with E-doors +
+// windows + roofs, ziplines, cover, trees, foliage, and dim interior lights. Doors are returned
+// as specs and handled at runtime by src/doors.ts.
 import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
+import {
+  CENTER_TOWER, ROCKET_TOWER, WATCH_TOWER, ZIPLINES, SPAWN_POINTS,
+  AMMO_PICKUPS, GRENADE_PICKUPS, HEALTH_PICKUPS, ARMOR_PICKUPS, SPRING_PICKUPS, EXPLOSIVE_BARRELS,
+  type Vec3,
+} from "../worker/protocol";
+import type { DoorSpec } from "./doors";
 
-const ARENA = 180;       // much-bigger arena (was 100) — issues #3 / #4
-const HALF = ARENA / 2;  // 90
+const ARENA = 240;
+const HALF = ARENA / 2;  // 120
 const WALL_H = 8;
 const WALL_T = 1;
+const CONCRETE = 0x6e6e6a; // Soviet concrete gray
 
 export interface MapProps {
   crate?: GLTF | null; barrel?: GLTF | null; container?: GLTF | null; rock?: GLTF | null; tree?: GLTF | null;
@@ -19,7 +26,6 @@ export interface MapProps {
   textures?: { grass: THREE.Texture | null; stone: THREE.Texture | null };
 }
 
-// A climbable ladder volume (axis-aligned XZ footprint in front of a wall, from baseY to topY).
 export interface Ladder { minX: number; maxX: number; minZ: number; maxZ: number; baseY: number; topY: number; }
 
 function fitWidth(obj: THREE.Object3D, targetW: number): void {
@@ -29,14 +35,15 @@ function fitWidth(obj: THREE.Object3D, targetW: number): void {
   obj.scale.setScalar(targetW / (Math.max(s.x, s.z) || 1));
 }
 
-export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual: THREE.Group; ladders: Ladder[] } {
+export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual: THREE.Group; ladders: Ladder[]; doors: DoorSpec[] } {
   const collision = new THREE.Group();
   const visual = new THREE.Group();
   const ladders: Ladder[] = [];
+  const doors: DoorSpec[] = [];
 
   const grassTex = reg.textures?.grass ?? null;
   const stoneTex = reg.textures?.stone ?? null;
-  if (grassTex) grassTex.repeat.set(45, 45);
+  if (grassTex) grassTex.repeat.set(60, 60);
   if (stoneTex) stoneTex.repeat.set(2, 2);
   const structMat = stoneTex ? new THREE.MeshStandardMaterial({ map: stoneTex, roughness: 1 }) : null;
 
@@ -47,8 +54,8 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
     if (rotZ) m.rotation.z = rotZ;
     collision.add(m);
   };
-  const vstruct = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, rotX = 0, rotZ = 0): void => {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), structMat ?? new THREE.MeshStandardMaterial({ color, roughness: 1 }));
+  const vstruct = (w: number, h: number, d: number, color: number, x: number, y: number, z: number, rotX = 0, rotZ = 0, textured = true): void => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), textured && structMat ? structMat : new THREE.MeshStandardMaterial({ color, roughness: 1 }));
     m.position.set(x, y, z);
     if (rotX) m.rotation.x = rotX;
     if (rotZ) m.rotation.z = rotZ;
@@ -60,15 +67,16 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
     vstruct(w, h, d, color, x, y, z, rotX, rotZ);
     cbox(w, h, d, x, y, z, rotX, rotZ);
   };
-  const collOnly = (w: number, h: number, d: number, x: number, y: number, z: number): void => {
+  // Concrete structural box (visual uses a flat concrete color, NOT the stone texture).
+  const conc = (w: number, h: number, d: number, x: number, y: number, z: number): void => {
+    vstruct(w, h, d, CONCRETE, x, y, z, 0, 0, false);
     cbox(w, h, d, x, y, z);
   };
+  const collOnly = (w: number, h: number, d: number, x: number, y: number, z: number): void => { cbox(w, h, d, x, y, z); };
 
   const shade = (o: THREE.Object3D): void => {
     o.traverse((m) => { m.userData.noHit = true; if ((m as THREE.Mesh).isMesh) { m.castShadow = true; m.receiveShadow = true; } });
   };
-
-  // Decorative model (visual only): clone, fit to footprint width, base-anchor on the ground.
   const deco = (model: GLTF | null | undefined, footprintW: number, x: number, z: number, rotY = 0): THREE.Object3D | null => {
     if (!model) return null;
     const o = cloneSkeleton(model.scene);
@@ -76,15 +84,12 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
     o.position.set(x, 0, z);
     if (rotY) o.rotation.y = rotY;
     o.updateMatrixWorld(true);
-    o.position.y -= new THREE.Box3().setFromObject(o).min.y; // sit on the ground
+    o.position.y -= new THREE.Box3().setFromObject(o).min.y;
     o.updateMatrixWorld(true);
     shade(o);
     visual.add(o);
     return o;
   };
-
-  // Small solid prop: place the model, then collide its full bounds (a box). Good for
-  // compact convex props (crates/rocks/barrels/containers/logs). Falls back to a colored box.
   const solidProp = (model: GLTF | null | undefined, footprintW: number, x: number, z: number, rotY: number, fb: { w: number; h: number; d: number }, color: number): void => {
     const o = deco(model, footprintW, x, z, rotY);
     if (o) {
@@ -92,21 +97,6 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
       const s = new THREE.Vector3(); bb.getSize(s);
       const c = new THREE.Vector3(); bb.getCenter(c);
       cbox(s.x, s.y, s.z, c.x, c.y, c.z);
-    } else {
-      vstruct(fb.w, fb.h, fb.d, color, x, fb.h / 2, z);
-      cbox(fb.w, fb.h, fb.d, x, fb.h / 2, z);
-    }
-  };
-
-  // Building: collision uses the model's ACTUAL geometry (a clone fed into the Octree), so the
-  // capsule hits real walls and you can walk in through real doorways — no oversized box, no
-  // getting stuck, enterable. Falls back to a solid box if the model is missing.
-  const building = (model: GLTF | null | undefined, footprintW: number, x: number, z: number, rotY: number, fb: { w: number; h: number; d: number }, color: number): void => {
-    const o = deco(model, footprintW, x, z, rotY);
-    if (o) {
-      const c = o.clone(true);          // shares geometry buffers; copies the baked transform
-      c.updateMatrixWorld(true);
-      collision.add(c);                  // Octree triangulates this → accurate, enterable collision
     } else {
       vstruct(fb.w, fb.h, fb.d, color, x, fb.h / 2, z);
       cbox(fb.w, fb.h, fb.d, x, fb.h / 2, z);
@@ -123,7 +113,7 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
   visual.add(ground);
   cbox(ARENA, 1, ARENA, 0, -0.5, 0);
 
-  // --- Perimeter: invisible collision walls + tiled fence models ---
+  // --- Perimeter ---
   const wy = WALL_H / 2;
   collOnly(ARENA, WALL_H, WALL_T, 0, wy, -HALF);
   collOnly(ARENA, WALL_H, WALL_T, 0, wy, HALF);
@@ -140,84 +130,135 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
       deco(reg.fence, step, HALF, t, Math.PI / 2);
     }
   } else {
-    vstruct(ARENA, WALL_H, WALL_T, 0x70808f, 0, wy, -HALF);
-    vstruct(ARENA, WALL_H, WALL_T, 0x70808f, 0, wy, HALF);
-    vstruct(WALL_T, WALL_H, ARENA, 0x70808f, -HALF, wy, 0);
-    vstruct(WALL_T, WALL_H, ARENA, 0x70808f, HALF, wy, 0);
+    vstruct(ARENA, WALL_H, WALL_T, 0x4a525a, 0, wy, -HALF, 0, 0, false);
+    vstruct(ARENA, WALL_H, WALL_T, 0x4a525a, 0, wy, HALF, 0, 0, false);
+    vstruct(WALL_T, WALL_H, ARENA, 0x4a525a, -HALF, wy, 0, 0, 0, false);
+    vstruct(WALL_T, WALL_H, ARENA, 0x4a525a, HALF, wy, 0, 0, 0, false);
   }
 
-  // Occupancy tracker so scattered cover/foliage avoids buildings + platforms.
   const occ: Array<{ x: number; z: number; r: number }> = [];
   const note = (x: number, z: number, r: number): void => { occ.push({ x, z, r }); };
   const clearSpot = (x: number, z: number, pad: number): boolean =>
-    Math.hypot(x, z) > 14 && Math.hypot(x, z) < 78 && occ.every((o) => Math.hypot(x - o.x, z - o.z) > o.r + pad);
+    Math.hypot(x, z) > 16 && Math.hypot(x, z) < 104 && occ.every((o) => Math.hypot(x - o.x, z - o.z) > o.r + pad);
 
-  // --- Buildings: complete models, ENTERABLE (collision = real geometry via the Octree).
-  //     Tower at center, an inner diagonal ring, and an outer cardinal ring. ---
-  const place = (m: GLTF | null | undefined, w: number, x: number, z: number, rot: number, fb: { w: number; h: number; d: number }, color: number): void => {
-    building(m, w, x, z, rot, fb, color);
-    note(x, z, w * 0.75);
-  };
-  place(reg.bTower, 11, 0, 0, 0, { w: 9, h: 12, d: 9 }, 0x8a8a8a);            // central landmark
-  place(reg.bHouse1, 13, -40, -40, 0, { w: 10, h: 5, d: 10 }, 0x9a8a72);     // inner diagonal ring
-  place(reg.bHouse2, 13, 40, 40, Math.PI, { w: 10, h: 5, d: 10 }, 0x9a8a72);
-  place(reg.bShed, 9, 40, -40, Math.PI / 2, { w: 7, h: 4, d: 7 }, 0x8a7a5a);
-  place(reg.bShed2, 9, -40, 40, -Math.PI / 2, { w: 7, h: 4, d: 7 }, 0x8a7a5a);
-  place(reg.bHouse2, 13, 0, -66, 0, { w: 10, h: 5, d: 10 }, 0x9a8a72);       // outer cardinal ring
-  place(reg.bHouse1, 13, 0, 66, Math.PI, { w: 10, h: 5, d: 10 }, 0x9a8a72);
-  place(reg.bShed, 9, -66, 0, Math.PI / 2, { w: 7, h: 4, d: 7 }, 0x8a7a5a);
-  place(reg.bShed2, 9, 66, 0, -Math.PI / 2, { w: 7, h: 4, d: 7 }, 0x8a7a5a);
-
-  // --- 4 climbable stone platforms (verticality) around the tower + axis-aware ramps ---
-  const midH = 2.5;
-  const rampColor = 0xaaaaaa;
-  const rampAngle = Math.atan2(2.5, 10);
-  const rampLen = Math.hypot(10, 2.5);
-  for (const [mx, mz] of [[28, 0], [-28, 0], [0, 28], [0, -28]] as Array<[number, number]>) {
-    collOnly(10, midH, 10, mx, midH / 2, mz);
-    vstruct(10, midH, 10, 0x6b6f62, mx, midH / 2, mz);
-    if (mz !== 0) {
-      // platform on the Z axis → ramp runs along Z (tilt about X)
-      solid(5, 0.5, rampLen, rampColor, mx, midH / 2, mz + (mz > 0 ? -8 : 8), mz > 0 ? rampAngle : -rampAngle, 0);
-    } else {
-      // platform on the X axis → ramp runs along X (tilt about Z)
-      solid(rampLen, 0.5, 5, rampColor, mx + (mx > 0 ? -8 : 8), midH / 2, mz, 0, mx > 0 ? -rampAngle : rampAngle);
-    }
-    note(mx, mz, 9);
-  }
-
-  // --- Ladder towers: a solid tower you climb (ladder on the +Z face) to a high perch ---
-  const ladderTower = (x: number, z: number): void => {
-    const W = 5, H = 11;
-    solid(W, H, W, 0x77787c, x, H / 2, z); // solid tower; the top (y=H) is the perch
-    const lz = z + W / 2 + 0.07;           // ladder visual just in front of the +Z face
-    vstruct(0.14, H, 0.14, 0x5a3a1a, x - 0.55, H / 2, lz);
-    vstruct(0.14, H, 0.14, 0x5a3a1a, x + 0.55, H / 2, lz);
-    for (let ry = 0.6; ry < H; ry += 0.7) vstruct(1.25, 0.1, 0.1, 0x6b4a26, x, ry, lz);
+  // --- Climbable towers (center tallest) ---
+  const ladderTower = (t: Vec3, top = 0x5a5d62): void => {
+    const [x, H, z] = t;
+    const W = 5;
+    conc(W, H, W, x, H / 2, z);
+    void top;
+    const lz = z + W / 2 + 0.07;
+    vstruct(0.14, H, 0.14, 0x3a2a16, x - 0.55, H / 2, lz, 0, 0, false);
+    vstruct(0.14, H, 0.14, 0x3a2a16, x + 0.55, H / 2, lz, 0, 0, false);
+    for (let ry = 0.6; ry < H; ry += 0.7) vstruct(1.25, 0.1, 0.1, 0x4b3a1e, x, ry, lz, 0, 0, false);
     ladders.push({ minX: x - 1.3, maxX: x + 1.3, minZ: z + W / 2, maxZ: z + W / 2 + 1.4, baseY: 0, topY: H });
     note(x, z, 5);
   };
-  ladderTower(16, -16);
-  ladderTower(-16, 16);
+  ladderTower(CENTER_TOWER);
+  ladderTower(ROCKET_TOWER);
+  ladderTower(WATCH_TOWER);
 
-  // --- Big containers as chunky cover at clear mid-ring spots ---
-  for (const [x, z, rot] of [[24, -52, 0], [-24, 52, 0], [52, 24, Math.PI / 2], [-52, -24, Math.PI / 2]] as Array<[number, number, number]>) {
-    if (clearSpot(x, z, 3)) { solidProp(reg.container, 10, x, z, rot, { w: 10, h: 5, d: 4 }, 0x995533); note(x, z, 6); }
-  }
-  // --- Fallen logs (low cover) ---
-  for (const [x, z, rot] of [[-52, 24, 0], [52, -24, 0]] as Array<[number, number, number]>) {
-    if (clearSpot(x, z, 3)) { solidProp(reg.log, 6, x, z, rot, { w: 6, h: 1.4, d: 1.6 }, 0x6b4f2f); note(x, z, 4); }
+  // --- Enterable concrete homes (closed: walls + roof + windows + an E-door). `stories` 1 or 2. ---
+  const T = 0.7, doorW = 3.2, doorH = 3, winW = 2.6;
+  // A wall with a centered window gap, along X (z fixed) or Z (x fixed), from baseY up by h.
+  const winWallX = (cx: number, zc: number, halfLen: number, baseY: number, h: number): void => {
+    const sillOff = 1.0, headOff = h - 0.8, side = 2 * halfLen;
+    conc(side, sillOff, T, cx, baseY + sillOff / 2, zc);
+    conc(side, h - headOff, T, cx, baseY + (headOff + h) / 2, zc);
+    const post = halfLen - winW / 2;
+    conc(post, headOff - sillOff, T, cx - (winW / 2 + post / 2), baseY + (sillOff + headOff) / 2, zc);
+    conc(post, headOff - sillOff, T, cx + (winW / 2 + post / 2), baseY + (sillOff + headOff) / 2, zc);
+  };
+  const winWallZ = (xc: number, cz: number, halfLen: number, baseY: number, h: number): void => {
+    const sillOff = 1.0, headOff = h - 0.8, side = 2 * halfLen;
+    conc(T, sillOff, side, xc, baseY + sillOff / 2, cz);
+    conc(T, h - headOff, side, xc, baseY + (headOff + h) / 2, cz);
+    const post = halfLen - winW / 2;
+    conc(T, headOff - sillOff, post, xc, baseY + (sillOff + headOff) / 2, cz - (winW / 2 + post / 2));
+    conc(T, headOff - sillOff, post, xc, baseY + (sillOff + headOff) / 2, cz + (winW / 2 + post / 2));
+  };
+  // Front wall (-Z) with a doorway: two side segments + a lintel above the door; pushes a DoorSpec.
+  const doorWallX = (cx: number, zc: number, halfLen: number, h: number): void => {
+    const seg = halfLen - doorW / 2;
+    conc(seg, h, T, cx - (doorW / 2 + seg / 2), h / 2, zc);
+    conc(seg, h, T, cx + (doorW / 2 + seg / 2), h / 2, zc);
+    conc(doorW, h - doorH, T, cx, (doorH + h) / 2, zc); // lintel
+    doors.push({ hinge: [cx - doorW / 2, 0, zc], width: doorW, height: doorH, axis: "x", swing: 1 });
+  };
+
+  const home = (cx: number, cz: number, halfW: number, stories: number): void => {
+    const H1 = 4, H2 = 3.6;
+    // Ground floor: door on the front (-Z), windows on the other three sides.
+    doorWallX(cx, cz - halfW, halfW, H1);
+    winWallX(cx, cz + halfW, halfW, 0, H1);
+    winWallZ(cx - halfW, cz, halfW, 0, H1);
+    winWallZ(cx + halfW, cz, halfW, 0, H1);
+    if (stories >= 2) {
+      // Mezzanine floor over the left ~55% (the right side is open, double-height), reached by a ramp.
+      const mezzRight = cx + halfW * 0.1;
+      const mezzW = mezzRight - (cx - halfW);
+      conc(mezzW, 0.4, 2 * halfW, (cx - halfW) + mezzW / 2, H1 - 0.2, cz);
+      // Ramp up to the mezzanine edge (interior, right side).
+      const run = halfW - 1.5, rise = H1;
+      const ang = Math.atan2(rise, run);
+      solid(Math.hypot(run, rise), 0.4, 3.2, 0x55554f, cx + halfW * 0.1 + run / 2, H1 / 2, cz, 0, ang);
+      // Upper floor: windows all around.
+      winWallX(cx, cz - halfW, halfW, H1, H2);
+      winWallX(cx, cz + halfW, halfW, H1, H2);
+      winWallZ(cx - halfW, cz, halfW, H1, H2);
+      winWallZ(cx + halfW, cz, halfW, H1, H2);
+      conc(2 * halfW + T, 0.4, 2 * halfW + T, cx, H1 + H2 + 0.2, cz); // roof
+    } else {
+      conc(2 * halfW + T, 0.4, 2 * halfW + T, cx, H1 + 0.2, cz); // roof
+    }
+    // Dim interior light so the closed home isn't pitch-black under the overcast sky.
+    const light = new THREE.PointLight(0x9fb4cc, 14, 22, 1.6);
+    light.position.set(cx, stories >= 2 ? H1 + 1 : H1 * 0.6, cz);
+    visual.add(light);
+    note(cx, cz, halfW + 2);
+  };
+  home(62, 0, 9, 2);
+  home(-62, 0, 8, 1);
+  home(0, 62, 9, 2);
+  home(0, -62, 8, 1);
+  home(62, 62, 8, 1);
+  home(-62, -62, 9, 2);
+
+  // --- Ziplines ---
+  for (const z of ZIPLINES) {
+    const a = new THREE.Vector3(z.a[0], z.a[1], z.a[2]);
+    const b = new THREE.Vector3(z.b[0], z.b[1], z.b[2]);
+    const cable = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.07, a.distanceTo(b), 6),
+      new THREE.MeshStandardMaterial({ color: 0x14141a, roughness: 0.6, metalness: 0.4 }),
+    );
+    cable.position.copy(a.clone().add(b).multiplyScalar(0.5));
+    cable.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+    cable.userData.noHit = true;
+    visual.add(cable);
   }
 
-  // --- Scattered low cover (crates / rocks / barrels), avoiding structures + spawn ring ---
+  // Exclude every pickup + barrel + spawn spot from scattered-cover placement.
+  for (const arr of [AMMO_PICKUPS, GRENADE_PICKUPS, HEALTH_PICKUPS, ARMOR_PICKUPS, SPRING_PICKUPS, EXPLOSIVE_BARRELS, SPAWN_POINTS]) {
+    for (const p of arr) note(p[0], p[2], 4);
+  }
+
+  // --- Chunky cover: containers + logs ---
+  for (const [x, z, rot] of [[30, -70, 0], [-30, 70, 0], [70, 30, Math.PI / 2], [-70, -30, Math.PI / 2]] as Array<[number, number, number]>) {
+    if (clearSpot(x, z, 3)) { solidProp(reg.container, 10, x, z, rot, { w: 10, h: 5, d: 4 }, 0x6a6a60); note(x, z, 6); }
+  }
+  for (const [x, z, rot] of [[-70, 30, 0], [70, -30, 0]] as Array<[number, number, number]>) {
+    if (clearSpot(x, z, 3)) { solidProp(reg.log, 6, x, z, rot, { w: 6, h: 1.4, d: 1.6 }, 0x4f3d24); note(x, z, 4); }
+  }
+
+  // --- Scattered low cover: crates + rocks ONLY (no inert barrels — all barrels are explosive) ---
   const coverDefs = [
-    { m: reg.crate, w: 4, fb: { w: 4, h: 3, d: 4 }, c: 0xb5651d },
-    { m: reg.rock, w: 4.5, fb: { w: 4.5, h: 2.5, d: 4.5 }, c: 0x777777 },
-    { m: reg.barrel, w: 1.3, fb: { w: 1.3, h: 1.6, d: 1.3 }, c: 0xcc5533 },
+    { m: reg.crate, w: 4, fb: { w: 4, h: 3, d: 4 }, c: 0x8a6a3a },
+    { m: reg.rock, w: 4.5, fb: { w: 4.5, h: 2.5, d: 4.5 }, c: 0x5a5a5a },
   ];
   let ci = 0;
-  for (let gx = -72; gx <= 72; gx += 13) {
-    for (let gz = -72; gz <= 72; gz += 13) {
+  for (let gx = -96; gx <= 96; gx += 14) {
+    for (let gz = -96; gz <= 96; gz += 14) {
       const x = gx + (Math.abs(gx * 7 + gz * 13) % 7) - 3;
       const z = gz + (Math.abs(gx * 5 + gz * 11) % 7) - 3;
       if (!clearSpot(x, z, 4)) continue;
@@ -228,20 +269,18 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
     }
   }
 
-  // --- Trees (decorative, corners + edge midpoints) ---
-  for (const [x, z] of [[82, 82], [-82, 82], [82, -82], [-82, -82], [82, 0], [-82, 0], [0, 82], [0, -82]] as Array<[number, number]>) {
-    deco(reg.tree, 7, x, z);
+  // --- Trees + foliage (decorative) ---
+  for (const [x, z] of [[110, 110], [-110, 110], [110, -110], [-110, -110], [110, 0], [-110, 0], [0, 110], [0, -110]] as Array<[number, number]>) {
+    deco(reg.tree, 8, x, z);
   }
-
-  // --- Scattered foliage (deco only; off building/platform footprints) ---
   const foliage = [reg.grass, reg.bush, reg.fern];
   const sizes = [1.7, 2.8, 2.3];
   let fi = 0;
-  for (let gx = -80; gx <= 80; gx += 12) {
-    for (let gz = -80; gz <= 80; gz += 12) {
+  for (let gx = -104; gx <= 104; gx += 13) {
+    for (let gz = -104; gz <= 104; gz += 13) {
       const x = gx + (Math.abs(gx * 7 + gz * 13) % 6) - 3;
       const z = gz + (Math.abs(gx * 11 + gz * 5) % 6) - 3;
-      if (Math.hypot(x, z) < 10) continue;
+      if (Math.hypot(x, z) < 12) continue;
       if (!occ.every((o) => Math.hypot(x - o.x, z - o.z) > o.r + 1)) continue;
       const idx = fi % 3;
       deco(foliage[idx], sizes[idx]!, x, z, ((fi * 47) % 360) * (Math.PI / 180));
@@ -249,5 +288,5 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
     }
   }
 
-  return { collision, visual, ladders };
+  return { collision, visual, ladders, doors };
 }

@@ -28,8 +28,8 @@ export const FRAG_LIMIT = 25;                             // match also ends at 
 export const PICKUP_RADIUS = 2.6;          // pick up within this XZ distance
 export const PICKUP_RESPAWN_MS = 15000;    // a used crate returns after this long
 export const AMMO_PICKUPS: readonly Vec3[] = [
-  [24, 0, 24], [-24, 0, 24], [24, 0, -24], [-24, 0, -24],
-  [0, 0, 52], [0, 0, -52], [52, 0, 0], [-52, 0, 0],
+  [34, 0, 34], [-34, 0, 34], [34, 0, -34], [-34, 0, -34],
+  [0, 0, 72], [0, 0, -72], [72, 0, 0], [-72, 0, 0],
 ];
 
 // --- Grenade (throwable AoE) ---
@@ -40,15 +40,94 @@ export const GRENADE_RADIUS = 9;          // blast radius (units)
 export const GRENADE_DAMAGE = 120;        // damage at the center; linear falloff to 0 at the edge
 export const GRENADE_COOLDOWN_MS = 4000;  // per-player throw cooldown
 
+// Grenades are a limited resource: you carry a few and refill from map pickups / on (re)spawn.
+export const GRENADE_START = 2;           // grenades carried on (re)spawn
+export const GRENADE_MAX = 3;             // most you can carry at once
+export const GRENADE_PICKUP_RADIUS = 2.6; // pick up within this XZ distance
+export const GRENADE_PICKUP_RESPAWN_MS = 15000; // a used grenade crate returns after this long
+// Fixed grenade pickup positions (ground); walking over one tops you up to GRENADE_MAX.
+export const GRENADE_PICKUPS: readonly Vec3[] = [
+  [24, 0, -44], [-24, 0, 44], [44, 0, 24], [-44, 0, -24], [16, 0, 84], [-16, 0, -84],
+];
+
+// --- Rocket launcher (tower pickup; fires explosive splash rockets) ---
+// The launcher is NOT a default weapon: it sits on top of a tower and is claimed by
+// climbing a ladder and walking onto it. Picking it up grants ROCKET_CLIP rockets; when
+// they run out the launcher is dropped (you fall back to the rifle) until you grab another.
+export const ROCKET_CLIP = 3;              // rockets granted per pickup
+export const ROCKET_RESPAWN_MS = 20000;    // the launcher returns to the tower this long after it's taken
+export const ROCKET_PICKUP_RADIUS = 3.2;   // claim the launcher within this XZ distance of the tower top
+export const ROCKET_SPEED = 60;            // straight-flight speed (units/sec) — server times the detonation
+export const ROCKET_RADIUS = 7;            // blast radius (units)
+export const ROCKET_DAMAGE = 130;          // damage at the center; linear falloff to 0 at the edge
+export const ROCKET_MAX_RANGE = 320;       // server clamps the claimed impact point to this range
+// --- Climbable towers ([x, topSurfaceY, z]) — map.ts builds a matching solid tower with a
+// ladder at each x/z. The CENTER tower is the tallest (best parachute drop); the ROCKET tower
+// carries the launcher perch. Server pickup/zipline checks use these exact coordinates. ---
+export const CENTER_TOWER: Vec3 = [0, 26, 0];     // tallest landmark — climb + base-jump (no launcher)
+export const ROCKET_TOWER: Vec3 = [56, 18, -56];  // rocket launcher perch
+export const WATCH_TOWER: Vec3 = [-56, 18, 56];   // rocket launcher perch
+export const TOWERS: readonly Vec3[] = [CENTER_TOWER, ROCKET_TOWER, WATCH_TOWER];
+// Both non-center towers carry a rocket launcher pickup (indexed; one per tower).
+export const ROCKET_TOWERS: readonly Vec3[] = [ROCKET_TOWER, WATCH_TOWER];
+
+// Ziplines: ride from a tower top (a) down to a far point (b). Purely client-driven traversal.
+export interface Zipline { a: Vec3; b: Vec3; }
+export const ZIPLINES: readonly Zipline[] = [
+  { a: [0, 25, 0], b: [56, 18, -56] },   // center tower top -> rocket tower top
+  { a: [0, 25, 0], b: [-56, 18, 56] },   // center tower top -> watch tower top
+];
+
 // --- Explosive barrels (shoot to detonate; AoE damages nearby players) ---
-export const BARREL_HP = 50;            // ~2 rifle shots or 1 sniper shot
+// Detonate after BARREL_STREAK_COUNT hits from the SAME weapon landed rapidly (each within
+// BARREL_STREAK_WINDOW_MS of the last). A different weapon or a pause resets the streak. This
+// rewards dumping a burst into a barrel; the slow sniper effectively can't chain enough in time.
+export const BARREL_STREAK_COUNT = 5;
+export const BARREL_STREAK_WINDOW_MS = 2000;
 export const BARREL_RADIUS = 7;         // blast radius
 export const BARREL_DAMAGE = 90;        // damage at the center; linear falloff
 export const BARREL_RESPAWN_MS = 20000; // a detonated barrel returns after this long
 export const BARREL_HIT_RADIUS = 1.8;   // server accepts a shot whose ray passes within this of the barrel
+// Every barrel on the map is an explosive fuel barrel (no inert decorative barrels).
 export const EXPLOSIVE_BARRELS: readonly Vec3[] = [
-  [30, 0, 8], [-30, 0, -8], [8, 0, 30], [-8, 0, -30],
-  [36, 0, 36], [-36, 0, 36], [36, 0, -36], [-36, 0, -36],
+  [40, 0, 10], [-40, 0, -10], [10, 0, 40], [-10, 0, -40],
+  [48, 0, 48], [-48, 0, 48], [48, 0, -48], [-48, 0, -48],
+  [24, 0, 0], [-24, 0, 0], [0, 0, 24], [0, 0, -24],
+  [84, 0, 28], [-84, 0, -28], [28, 0, -84], [-28, 0, 84],
+];
+
+// --- Fall damage + parachute ---
+export const FALL_SAFE_DIST = 7;        // a fall up to this height (units) does no damage
+export const FALL_DMG_PER_UNIT = 9;     // damage per unit fallen beyond FALL_SAFE_DIST (≈ lethal past ~18u)
+export const PARACHUTE_FALL_SPEED = 4.5; // capped descent speed (units/sec) while the chute is open
+export const PARACHUTE_GLIDE_SPEED = 8;  // horizontal glide speed while parachuting
+export const PARACHUTE_MIN_HEIGHT = 6;   // only offer "press E" when at least this high above the ground
+
+// --- Health syringe pickups (heal to full) ---
+export const HEALTH_AMOUNT = MAX_HP;     // a syringe restores you to full health
+export const HEALTH_PICKUP_RADIUS = 2.6;
+export const HEALTH_RESPAWN_MS = 18000;
+export const HEALTH_PICKUPS: readonly Vec3[] = [
+  [40, 0, 0], [-40, 0, 0], [0, 0, 40],
+];
+
+// --- Armor pickups (grant MAX_ARMOR extra effective health; damage soaks armor first) ---
+export const ARMOR_AMOUNT = 50;
+export const MAX_ARMOR = 50;
+export const ARMOR_PICKUP_RADIUS = 2.6;
+export const ARMOR_RESPAWN_MS = 22000;
+export const ARMOR_PICKUPS: readonly Vec3[] = [
+  [0, 0, -40], [40, 0, 40],
+];
+
+// --- Spring boots pickups (timed super-jump) ---
+export const SPRING_DURATION_MS = 15000; // boots last 15s after pickup
+export const SPRING_RESPAWN_MS = 10000;  // a used spring pad returns after 10s
+export const SPRING_PICKUP_RADIUS = 2.4;
+export const SPRING_JUMP_MULT = 1.85;    // jump-velocity multiplier while the boots are active
+export const SPRING_PICKUPS: readonly Vec3[] = [
+  [72, 0, 72], [-72, 0, -72], [72, 0, -72], [-72, 0, 72],
+  [96, 0, 0], [-96, 0, 0], [0, 0, 96], [0, 0, -96],
 ];
 
 export type Vec3 = [number, number, number];
@@ -61,10 +140,15 @@ export interface Weapon {
   scoped: boolean; // true → full-screen scope overlay on ADS (sniper)
   auto: boolean;   // true → fires continuously while the trigger is held (else one shot per click)
 }
+// Weapon ids are array indices. Rifle (0) and Sniper (1) are always carried; Rocket (2) is a
+// tower pickup (see ROCKET_* above) and only usable while held — its ammo is tracked separately
+// (PlayerRec.rocketAmmo), not through the magazine/reserve system, and its blast uses ROCKET_*.
 export const WEAPONS: readonly Weapon[] = [
   { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 120, reloadMs: 1500, adsZoom: 0.8, scoped: false, auto: true },
   { id: 1, name: "Sniper", damage: 90, headMult: 2, maxRange: 320, cooldownMs: 1100, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, auto: false },
+  { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, auto: false },
 ];
+export const ROCKET_ID = 2; // index of the Rocket launcher in WEAPONS
 
 export const ST_DEAD = 0;
 export const ST_ALIVE = 1;
@@ -72,30 +156,38 @@ export const ST_PROTECTED = 3;                            // alive + spawn prote
 export type PlayerStateCode = typeof ST_DEAD | typeof ST_ALIVE | typeof ST_PROTECTED;
 
 // Server-assigned spawn points (ground positions; capsule end y = EYE_HEIGHT).
-// 12 points on a radius-~78 ring of the 180x180 arena (every 30°), clear of all buildings.
+// 12 points on a radius-100 ring of the 240x240 arena (every 30°), clear of all buildings.
 export const SPAWN_POINTS: readonly Vec3[] = [
-  [78, EYE_HEIGHT, 0], [67.5, EYE_HEIGHT, 39], [39, EYE_HEIGHT, 67.5],
-  [0, EYE_HEIGHT, 78], [-39, EYE_HEIGHT, 67.5], [-67.5, EYE_HEIGHT, 39],
-  [-78, EYE_HEIGHT, 0], [-67.5, EYE_HEIGHT, -39], [-39, EYE_HEIGHT, -67.5],
-  [0, EYE_HEIGHT, -78], [39, EYE_HEIGHT, -67.5], [67.5, EYE_HEIGHT, -39],
+  [100, EYE_HEIGHT, 0], [86.6, EYE_HEIGHT, 50], [50, EYE_HEIGHT, 86.6],
+  [0, EYE_HEIGHT, 100], [-50, EYE_HEIGHT, 86.6], [-86.6, EYE_HEIGHT, 50],
+  [-100, EYE_HEIGHT, 0], [-86.6, EYE_HEIGHT, -50], [-50, EYE_HEIGHT, -86.6],
+  [0, EYE_HEIGHT, -100], [50, EYE_HEIGHT, -86.6], [86.6, EYE_HEIGHT, -50],
 ];
 
 // ---- Client -> Server ----
-export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; c?: boolean; }
+// `c` = crouching, `pc` = parachute deployed (both echoed in snapshots for remote rendering).
+export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; c?: boolean; pc?: boolean; }
 export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; barrel?: number | null; }
 export interface ReadyMsg { t: "ready"; ready: boolean; }
 export interface ReloadMsg { t: "reload"; w: number; }
 export interface ThrowMsg { t: "throw"; o: Vec3; d: Vec3; } // throw a grenade: origin + aim direction
-export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg;
+// Fire a rocket. The client (which has the map geometry) raycasts and sends the impact point
+// `p`; the server validates ownership/ammo/fire-rate, times the detonation, and applies AoE.
+export interface RocketMsg { t: "rocket"; seq: number; ts: number; o: Vec3; d: Vec3; p: Vec3; hit: number | null; barrel: number | null; }
+// Self-inflicted fall damage. The client detects a hard landing and claims the damage; the
+// server clamps it and applies it to the sender (movement/landing is client-authoritative).
+export interface FallMsg { t: "fall"; dmg: number; }
+export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | RocketMsg | FallMsg;
 
 // ---- Server -> Client ----
+// c = crouching, g = grenade count, a = armor, pc = parachute deployed.
 export interface PlayerSnap {
-  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean;
+  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean;
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
 export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; }
 export interface HitMsg     { t: "hit";     by: number; on: number; dmg: number; hp: number; head: boolean; }
-export interface KillMsg    { t: "kill";    by: number; on: number; w: number; }
+export interface KillMsg    { t: "kill";    by: number; on: number; w: number; blast?: boolean; } // blast → client gibs the victim
 export interface SpawnMsg   { t: "spawn";   id: number; p: Vec3; prot: number; }
 export interface LeaveMsg   { t: "leave";   id: number; }
 export interface Standing { id: number; name: string; frags: number; deaths: number; }
@@ -106,7 +198,13 @@ export interface LobbyMsg { t: "lobby"; players: LobbyPlayer[]; matchActive: boo
 export interface GrenadeMsg { t: "grenade"; o: Vec3; v: Vec3; fuseMs: number; } // render the thrown arc + detonation
 export interface PickupMsg { t: "pickup"; id: number; by: number; availableAt: number; } // ammo crate taken
 export interface BarrelMsg { t: "barrel"; id: number; pos: Vec3; respawnAt: number; } // barrel detonated
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg;
+export interface RocketFxMsg { t: "rocketfx"; o: Vec3; d: Vec3; p: Vec3; travelMs: number; } // render a rocket flying to p, then a blast
+export interface WeaponPickupMsg { t: "weaponpickup"; id: number; by: number; availableAt: number; } // rocket launcher taken off tower `id`
+export interface GrenadePickupMsg { t: "gpickup"; id: number; by: number; availableAt: number; } // grenade crate taken
+export interface HealthPickupMsg { t: "hpickup"; id: number; by: number; availableAt: number; } // health syringe taken
+export interface ArmorPickupMsg { t: "apickup"; id: number; by: number; availableAt: number; } // armor taken
+export interface SpringPickupMsg { t: "sppickup"; id: number; by: number; availableAt: number; durationMs: number; } // spring boots taken
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg;
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }
 export function decode<T>(raw: string): T | null { try { return JSON.parse(raw) as T; } catch { return null; } }

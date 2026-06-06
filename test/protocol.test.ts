@@ -5,9 +5,16 @@ import {
   sanitizeRoom,
   sanitizeName,
   SERVER_TICK_HZ,
+  WEAPONS,
+  ROCKET_ID,
+  ROCKET_CLIP,
+  GRENADE_START,
+  GRENADE_MAX,
   type InMsg,
   type ShootMsg,
   type SnapMsg,
+  type RocketMsg,
+  type RocketFxMsg,
 } from "../worker/protocol";
 
 describe("encode/decode round-trip", () => {
@@ -113,5 +120,25 @@ describe("sanitizeName", () => {
 describe("constants", () => {
   it("exposes SERVER_TICK_HZ", () => {
     expect(SERVER_TICK_HZ).toBe(20);
+  });
+
+  it("defines the rocket launcher weapon and grenade-resource bounds", () => {
+    expect(WEAPONS[ROCKET_ID]?.name).toBe("Rocket");
+    expect(ROCKET_CLIP).toBeGreaterThan(0);
+    expect(GRENADE_START).toBeLessThanOrEqual(GRENADE_MAX);
+  });
+});
+
+describe("rocket message round-trips", () => {
+  it("round-trips a client RocketMsg", () => {
+    const msg: RocketMsg = {
+      t: "rocket", seq: 5, ts: 1717430000333, o: [0, 1, 0], d: [0, 0, -1], p: [0, 1, -20], hit: 3, barrel: null,
+    };
+    expect(decode<RocketMsg>(encode(msg))).toEqual(msg);
+  });
+
+  it("round-trips a server RocketFxMsg", () => {
+    const msg: RocketFxMsg = { t: "rocketfx", o: [0, 1, 0], d: [0, 0, -1], p: [0, 1, -20], travelMs: 333 };
+    expect(decode<RocketFxMsg>(encode(msg))).toEqual(msg);
   });
 });

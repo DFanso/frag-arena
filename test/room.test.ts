@@ -23,7 +23,21 @@ import {
   AMMO_PICKUPS,
   GRENADE_RADIUS,
   GRENADE_DAMAGE,
+  GRENADE_START,
+  GRENADE_MAX,
+  GRENADE_PICKUPS,
+  ROCKET_ID,
+  ROCKET_CLIP,
+  ROCKET_RADIUS,
+  ROCKET_TOWER,
   EXPLOSIVE_BARRELS,
+  ARMOR_AMOUNT,
+  MAX_ARMOR,
+  HEALTH_AMOUNT,
+  HEALTH_PICKUPS,
+  ARMOR_PICKUPS,
+  SPRING_PICKUPS,
+  SPRING_DURATION_MS,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -375,6 +389,10 @@ function makeRec(
     protectedUntil: number;
     lastInputAt: number;
     inMatch: boolean;
+    grenades: number;
+    hasRocket: boolean;
+    rocketAmmo: number;
+    armor: number;
   }> = {},
 ) {
   const ws = {} as unknown as WebSocket;
@@ -401,7 +419,12 @@ function makeRec(
     reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
     reloadEndsAt: WEAPONS.map(() => 0),
     lastGrenadeAt: 0,
+    grenades: opts.grenades ?? GRENADE_START,
+    hasRocket: opts.hasRocket ?? false,
+    rocketAmmo: opts.rocketAmmo ?? 0,
+    armor: opts.armor ?? 0,
     c: false,
+    pc: false,
   };
 }
 
@@ -669,7 +692,7 @@ describe("GameRoom explosive barrel", () => {
     await runInDurableObject(stub, async (instance: GameRoom) => {
       const inst = instance as unknown as RoomInternals & {
         handleBarrelHit: (rec: ReturnType<typeof makeRec>, m: unknown, b: number, weapon: unknown, now: number) => void;
-        barrelHp: number[]; barrelDownUntil: number[];
+        barrelStreak: unknown[]; barrelDownUntil: number[];
       };
       inst.broadcast = () => {};
       const bp = EXPLOSIVE_BARRELS[0]!;
@@ -678,13 +701,35 @@ describe("GameRoom explosive barrel", () => {
       inst.byId.set(1, shooter); inst.byId.set(2, victim);
       inst.players.set(shooter.ws, shooter); inst.players.set(victim.ws, victim);
       const now = Date.now();
-      const m = { t: "shoot", o: [bp[0], 1, bp[2] + 5], d: [0, 0, -1], w: 1, hit: null, head: false, barrel: 0, seq: 1, ts: now };
+      const m = { t: "shoot", o: [bp[0], 1, bp[2] + 5], d: [0, 0, -1], w: 0, hit: null, head: false, barrel: 0, seq: 1, ts: now };
 
-      inst.handleBarrelHit(shooter, m, 0, WEAPONS[1]!, now); // sniper (90 dmg) one-shots a 50-HP barrel
+      // 4 rapid rifle hits don't detonate it yet; the 5th does.
+      for (let i = 0; i < 4; i++) inst.handleBarrelHit(shooter, m, 0, WEAPONS[0]!, now + i);
+      expect(inst.barrelDownUntil[0]).toBe(0);   // still standing
+      expect(victim.hp).toBe(MAX_HP);            // no blast yet
+      inst.handleBarrelHit(shooter, m, 0, WEAPONS[0]!, now + 5); // 5th rapid same-weapon hit
 
-      expect(inst.barrelHp[0]).toBe(0);                      // destroyed
-      expect(inst.barrelDownUntil[0]).toBeGreaterThan(now);  // respawning later
-      expect(victim.hp).toBeLessThan(MAX_HP);                // took blast AoE
+      expect(inst.barrelStreak[0]).toBeNull();              // streak cleared on detonation
+      expect(inst.barrelDownUntil[0]).toBeGreaterThan(now); // respawning later
+      expect(victim.hp).toBeLessThan(MAX_HP);               // took blast AoE
+    });
+  });
+
+  it("a slow same-weapon streak (outside the window) never detonates the barrel", async () => {
+    const stub = env.ROOMS.getByName("barrel-slow");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        handleBarrelHit: (rec: ReturnType<typeof makeRec>, m: unknown, b: number, weapon: unknown, now: number) => void;
+        barrelDownUntil: number[];
+      };
+      inst.broadcast = () => {};
+      const bp = EXPLOSIVE_BARRELS[0]!;
+      const shooter = makeRec(1, [bp[0], 1, bp[2] + 5]);
+      inst.byId.set(1, shooter); inst.players.set(shooter.ws, shooter);
+      const m = { t: "shoot", o: [bp[0], 1, bp[2] + 5], d: [0, 0, -1], w: 0, hit: null, head: false, barrel: 0, seq: 1, ts: 0 };
+      // 6 hits each spaced 3s apart (> BARREL_STREAK_WINDOW_MS) — the streak keeps resetting to 1.
+      for (let i = 0; i < 6; i++) inst.handleBarrelHit(shooter, m, 0, WEAPONS[0]!, 100000 + i * 3000);
+      expect(inst.barrelDownUntil[0]).toBe(0); // never detonated
     });
   });
 
@@ -693,17 +738,16 @@ describe("GameRoom explosive barrel", () => {
     await runInDurableObject(stub, async (instance: GameRoom) => {
       const inst = instance as unknown as RoomInternals & {
         handleBarrelHit: (rec: ReturnType<typeof makeRec>, m: unknown, b: number, weapon: unknown, now: number) => void;
-        barrelHp: number[];
+        barrelStreak: unknown[];
       };
       inst.broadcast = () => {};
       const bp = EXPLOSIVE_BARRELS[0]!;
       const shooter = makeRec(1, [bp[0], 1, bp[2] + 5]);
       inst.byId.set(1, shooter); inst.players.set(shooter.ws, shooter);
-      const before = inst.barrelHp[0];
       // aim 90° away from the barrel
-      const m = { t: "shoot", o: [bp[0], 1, bp[2] + 5], d: [1, 0, 0], w: 1, hit: null, head: false, barrel: 0, seq: 1, ts: Date.now() };
-      inst.handleBarrelHit(shooter, m, 0, WEAPONS[1]!, Date.now());
-      expect(inst.barrelHp[0]).toBe(before); // unchanged — the claim was rejected
+      const m = { t: "shoot", o: [bp[0], 1, bp[2] + 5], d: [1, 0, 0], w: 0, hit: null, head: false, barrel: 0, seq: 1, ts: Date.now() };
+      for (let i = 0; i < 6; i++) inst.handleBarrelHit(shooter, m, 0, WEAPONS[0]!, Date.now() + i);
+      expect(inst.barrelStreak[0]).toBeNull(); // never advanced — every claim was rejected
     });
   });
 });
@@ -1105,5 +1149,226 @@ describe("GameRoom match lifecycle", () => {
     });
 
     a.close();
+  });
+});
+
+// ---- grenades as a limited resource ----
+describe("GameRoom grenade resource", () => {
+  it("a throw consumes one grenade and broadcasts the arc", async () => {
+    const stub = env.ROOMS.getByName("nade-throw");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals & { handleThrow: (rec: ReturnType<typeof makeRec>, m: unknown) => void };
+      inst.broadcast = (m) => broadcasts.push(m);
+      const rec = makeRec(1, [0, 1, 0], { grenades: GRENADE_START });
+      inst.byId.set(1, rec); inst.players.set(rec.ws, rec);
+
+      inst.handleThrow(rec, { t: "throw", o: [0, 1.5, 0], d: [0, 0.2, -1] });
+
+      expect(rec.grenades).toBe(GRENADE_START - 1);
+      expect(broadcasts.some((b) => (b as { t?: string }).t === "grenade")).toBe(true);
+    });
+  });
+
+  it("ignores a throw when out of grenades", async () => {
+    const stub = env.ROOMS.getByName("nade-empty");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals & { handleThrow: (rec: ReturnType<typeof makeRec>, m: unknown) => void };
+      inst.broadcast = (m) => broadcasts.push(m);
+      const rec = makeRec(1, [0, 1, 0], { grenades: 0 });
+      inst.byId.set(1, rec); inst.players.set(rec.ws, rec);
+
+      inst.handleThrow(rec, { t: "throw", o: [0, 1.5, 0], d: [0, 0.2, -1] });
+
+      expect(rec.grenades).toBe(0);
+      expect(broadcasts.some((b) => (b as { t?: string }).t === "grenade")).toBe(false);
+    });
+  });
+
+  it("a grenade pickup tops the player up to GRENADE_MAX (then goes on cooldown)", async () => {
+    const stub = env.ROOMS.getByName("nade-pickup");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as any;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      inst.matchActive = true;
+      inst.matchEndsAt = Date.now() + 60_000;
+      const gp = GRENADE_PICKUPS[0]!;
+      const rec = makeRec(1, [gp[0], 1, gp[2]], { grenades: 1 });
+      inst.byId.set(1, rec); inst.players.set(rec.ws, rec);
+
+      inst.loopTick();
+
+      expect(rec.grenades).toBe(GRENADE_MAX);
+      expect(inst.grenadePickupAvail[0]).toBeGreaterThan(Date.now());
+      expect(broadcasts.some((b) => (b as { t?: string }).t === "gpickup")).toBe(true);
+    });
+  });
+});
+
+// ---- rocket launcher (tower pickup + splash fire) ----
+describe("GameRoom rocket launcher", () => {
+  it("the tower pickup grants the launcher to a player on the tower top", async () => {
+    const stub = env.ROOMS.getByName("rocket-pickup");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as any;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      inst.matchActive = true;
+      inst.matchEndsAt = Date.now() + 60_000;
+      // Standing on the tower top (eye well above the perch surface).
+      const rec = makeRec(1, [ROCKET_TOWER[0], ROCKET_TOWER[1] + 1, ROCKET_TOWER[2]]);
+      inst.byId.set(1, rec); inst.players.set(rec.ws, rec);
+
+      inst.loopTick();
+
+      expect(rec.hasRocket).toBe(true);
+      expect(rec.rocketAmmo).toBe(ROCKET_CLIP);
+      expect(inst.rocketTowerDownUntil[0]).toBeGreaterThan(Date.now()); // ROCKET_TOWER is tower index 0
+      const wp = broadcasts.find((b) => (b as { t?: string }).t === "weaponpickup") as { id?: number } | undefined;
+      expect(wp?.id).toBe(0);
+    });
+  });
+
+  it("rejects a hitscan shoot with the rocket weapon id (no free instant rockets)", async () => {
+    const stub = env.ROOMS.getByName("rocket-hitscan");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as any;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: 0 });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter); inst.byId.set(2, target);
+      inst.players.set(shooter.ws, shooter); inst.players.set(target.ws, target);
+      // A crafted shoot with the rocket id must be rejected (rocket only fires via handleRocket).
+      inst.handleShoot(shooter, { t: "shoot", seq: 1, ts: Date.now(), o: [0, 1, 0], d: [0, 0, 1], w: ROCKET_ID, hit: 2, head: true });
+      expect(target.hp).toBe(MAX_HP); // unharmed
+      expect(broadcasts.length).toBe(0);
+    });
+  });
+
+  it("does NOT grant the launcher from the ground under the tower", async () => {
+    const stub = env.ROOMS.getByName("rocket-ground");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      inst.matchActive = true;
+      inst.matchEndsAt = Date.now() + 60_000;
+      const rec = makeRec(1, [ROCKET_TOWER[0], 1, ROCKET_TOWER[2]]); // at the base, y≈1
+      inst.byId.set(1, rec); inst.players.set(rec.ws, rec);
+
+      inst.loopTick();
+
+      expect(rec.hasRocket).toBe(false);
+    });
+  });
+
+  it("firing the last rocket spends ammo, schedules a blast, drops the launcher, and then ignores further fire", async () => {
+    const stub = env.ROOMS.getByName("rocket-fire");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as any;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const rec = makeRec(1, [0, 1, 0], { hasRocket: true, rocketAmmo: 1, lastShotAt: 0 });
+      inst.byId.set(1, rec); inst.players.set(rec.ws, rec);
+
+      inst.handleRocket(rec, { t: "rocket", seq: 1, ts: Date.now(), o: [0, 1, 0], d: [0, 0, -1], p: [0, 1, -20], hit: null, barrel: null });
+
+      expect(rec.rocketAmmo).toBe(0);
+      expect(rec.hasRocket).toBe(false); // launcher dropped when it runs dry
+      expect(inst.pendingBlasts.length).toBe(1);
+      expect(inst.pendingBlasts[0].radius).toBe(ROCKET_RADIUS);
+      expect(broadcasts.filter((b) => (b as { t?: string }).t === "rocketfx").length).toBe(1);
+
+      // A further fire (no launcher held) is ignored — no extra blast / broadcast.
+      rec.lastShotAt = 0;
+      inst.handleRocket(rec, { t: "rocket", seq: 2, ts: Date.now(), o: [0, 1, 0], d: [0, 0, -1], p: [0, 1, -20], hit: null, barrel: null });
+      expect(inst.pendingBlasts.length).toBe(1);
+      expect(broadcasts.filter((b) => (b as { t?: string }).t === "rocketfx").length).toBe(1);
+    });
+  });
+
+  it("a dead player can neither fire a rocket nor throw a grenade", async () => {
+    const stub = env.ROOMS.getByName("dead-no-fire");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as any;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const rec = makeRec(1, [0, 1, 0], { st: ST_DEAD, hasRocket: true, rocketAmmo: 3, grenades: 3, lastShotAt: 0 });
+      inst.byId.set(1, rec); inst.players.set(rec.ws, rec);
+
+      inst.handleRocket(rec, { t: "rocket", seq: 1, ts: Date.now(), o: [0, 1, 0], d: [0, 0, -1], p: [0, 1, -20], hit: null, barrel: null });
+      inst.handleThrow(rec, { t: "throw", o: [0, 1.5, 0], d: [0, 0.2, -1] });
+
+      expect(rec.rocketAmmo).toBe(3);  // unchanged — fire rejected
+      expect(rec.grenades).toBe(3);    // unchanged — throw rejected
+      expect(inst.pendingBlasts.length).toBe(0);
+      expect(broadcasts.length).toBe(0);
+    });
+  });
+});
+
+// ---- armor + fall damage + health/armor/spring pickups ----
+describe("GameRoom armor / fall / new pickups", () => {
+  it("armor soaks damage before health, and is dropped on death", async () => {
+    const stub = env.ROOMS.getByName("armor-soak");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      const rec = makeRec(1, [0, 1, 0], { armor: 50 });
+      const killer = makeRec(2, [0, 1, 5]);
+      inst.byId.set(1, rec); inst.byId.set(2, killer);
+
+      inst.applyDamage(rec, 30, killer, false, false); // 30 < 50 armor
+      expect(rec.armor).toBe(20);
+      expect(rec.hp).toBe(MAX_HP); // health untouched while armor remains
+
+      inst.applyDamage(rec, 40, killer, false, false); // 20 armor soaks, 20 hits hp
+      expect(rec.armor).toBe(0);
+      expect(rec.hp).toBe(MAX_HP - 20);
+    });
+  });
+
+  it("fall damage hurts the sender; a big fall is a (self) kill with no frag", async () => {
+    const stub = env.ROOMS.getByName("fall-dmg");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      const rec = makeRec(1, [0, 1, 0]);
+      inst.byId.set(1, rec); inst.players.set(rec.ws, rec);
+
+      inst.handleFall(rec, { t: "fall", dmg: 40 });
+      expect(rec.hp).toBe(MAX_HP - 40);
+
+      inst.handleFall(rec, { t: "fall", dmg: 999 }); // lethal, clamped to MAX_HP
+      expect(rec.st).toBe(ST_DEAD);
+      expect(rec.deaths).toBe(1);
+      expect(rec.frags).toBe(0); // a fall is a suicide — no frag credit
+    });
+  });
+
+  it("health / armor / spring pickups grant their effect via loopTick + broadcast", async () => {
+    const stub = env.ROOMS.getByName("new-pickups");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as any;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      inst.matchActive = true;
+      inst.matchEndsAt = Date.now() + 60_000;
+      const hp = HEALTH_PICKUPS[0]!, ap = ARMOR_PICKUPS[0]!, sp = SPRING_PICKUPS[0]!;
+      const a = makeRec(1, [hp[0], 1, hp[2]], { hp: 30 });
+      const b = makeRec(2, [ap[0], 1, ap[2]], { armor: 0 });
+      const c = makeRec(3, [sp[0], 1, sp[2]]);
+      for (const r of [a, b, c]) { inst.byId.set(r.id, r); inst.players.set(r.ws, r); }
+
+      inst.loopTick();
+
+      expect(a.hp).toBe(HEALTH_AMOUNT);
+      expect(b.armor).toBe(ARMOR_AMOUNT);
+      expect(ARMOR_AMOUNT).toBeLessThanOrEqual(MAX_ARMOR);
+      const spring = broadcasts.find((m) => (m as { t?: string }).t === "sppickup") as { durationMs?: number } | undefined;
+      expect(spring?.durationMs).toBe(SPRING_DURATION_MS);
+    });
   });
 });
