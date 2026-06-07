@@ -5,11 +5,15 @@ import {
   axisFromKeys,
   moveAccel,
   ladderContains,
+  clampHorizontalSpeed,
+  fallDamage,
   MAX_DELTA,
+  MAX_GROUND_SPEED,
   MOVE_SPEED,
   SPRINT_MULT,
   DAMPING_GROUND,
 } from "../src/controls";
+import { FALL_SAFE_DIST } from "../worker/protocol";
 import { MAX_MOVE_SPEED, MOVE_SPEED_TOLERANCE } from "../worker/protocol";
 import type { Ladder } from "../src/map";
 
@@ -84,5 +88,37 @@ describe("moveAccel (sprint)", () => {
     // equilibrium ground speed ~= accel / DAMPING_GROUND; must be <= server budget
     const sprintSpeed = moveAccel(true, true) / DAMPING_GROUND;
     expect(sprintSpeed).toBeLessThanOrEqual(MAX_MOVE_SPEED * MOVE_SPEED_TOLERANCE);
+  });
+});
+
+describe("clampHorizontalSpeed (jump-speed fix)", () => {
+  it("leaves a sub-cap velocity unchanged", () => {
+    expect(clampHorizontalSpeed(2, 0)).toEqual([2, 0]);
+    expect(clampHorizontalSpeed(0, 0)).toEqual([0, 0]);
+  });
+
+  it("scales an over-cap velocity down to MAX_GROUND_SPEED, preserving direction", () => {
+    const [vx, vz] = clampHorizontalSpeed(100, 0);
+    expect(vx).toBeCloseTo(MAX_GROUND_SPEED, 6);
+    expect(vz).toBe(0);
+    // a diagonal runaway is capped in magnitude but keeps its 45° heading
+    const [dx, dz] = clampHorizontalSpeed(60, 60);
+    expect(Math.hypot(dx, dz)).toBeCloseTo(MAX_GROUND_SPEED, 6);
+    expect(dx).toBeCloseTo(dz, 6);
+  });
+
+  it("the cap stays within the server movement clamp", () => {
+    expect(MAX_GROUND_SPEED).toBeLessThanOrEqual(MAX_MOVE_SPEED * MOVE_SPEED_TOLERANCE);
+  });
+});
+
+describe("fallDamage", () => {
+  it("is zero for a fall up to the safe distance", () => {
+    expect(fallDamage(0)).toBe(0);
+    expect(fallDamage(FALL_SAFE_DIST)).toBe(0);
+  });
+  it("scales with the distance fallen beyond the safe distance", () => {
+    expect(fallDamage(FALL_SAFE_DIST + 1)).toBeGreaterThan(0);
+    expect(fallDamage(FALL_SAFE_DIST + 10)).toBeGreaterThan(fallDamage(FALL_SAFE_DIST + 5));
   });
 });

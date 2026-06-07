@@ -8,6 +8,7 @@ import { EXPLOSIVE_BARRELS } from "../worker/protocol";
 
 export class Barrels {
   private groups: THREE.Group[] = [];
+  private availableAt: number[] = [];
 
   constructor(scene: THREE.Scene, model: GLTF | null | undefined) {
     // One shared red material — do NOT mutate the source model's material (the map reuses it).
@@ -34,6 +35,7 @@ export class Barrels {
       root.traverse((o) => { o.userData["barrelId"] = i; }); // raycast claim target
       scene.add(root);
       this.groups.push(root);
+      this.availableAt.push(0);
     }
   }
 
@@ -42,12 +44,20 @@ export class Barrels {
     return this.groups;
   }
 
-  setAvailable(id: number, available: boolean): void {
+  // Hide a detonated barrel until `availableAtMs`; it re-shows itself in update().
+  setTaken(id: number, availableAtMs: number): void {
     const g = this.groups[id];
-    if (g) g.visible = available;
+    if (g) g.visible = false;
+    this.availableAt[id] = availableAtMs;
   }
 
   showAll(): void {
-    for (const g of this.groups) g.visible = true;
+    for (let i = 0; i < this.groups.length; i++) { this.groups[i]!.visible = true; this.availableAt[i] = 0; }
+  }
+
+  update(nowMs: number): void {
+    for (let i = 0; i < this.groups.length; i++) {
+      if (!this.groups[i]!.visible && nowMs >= this.availableAt[i]!) this.groups[i]!.visible = true;
+    }
   }
 }

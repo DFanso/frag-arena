@@ -1,7 +1,7 @@
 // src/combat.ts
 // Hitscan raycast from the crosshair (NDC center) + left-click shoot wiring.
 import * as THREE from "three";
-import { type Vec3 } from "../worker/protocol";
+import { ROCKET_MAX_RANGE, type Vec3 } from "../worker/protocol";
 
 // Impact this far (or more) above the player's feet counts as a headshot.
 export const HEAD_THRESHOLD = 0.8;
@@ -70,6 +70,57 @@ export function fireRay(camera: THREE.Camera, targets: THREE.Object3D[]): FireRe
     return { hit: id, barrel: null, head: isHead(it.point.y, playerBaseY), o, d };
   }
   return { hit: null, barrel: null, head: false, o, d };
+}
+
+// What a fired rocket struck: the impact point in world space plus whether it was a player /
+// barrel (so the client can show feedback). The server re-derives the blast from o + d + point.
+export interface RocketResult {
+  o: Vec3;               // ray origin (camera world position)
+  d: Vec3;               // ray direction (camera forward, normalized)
+  point: Vec3;           // first impact point against players / barrels / world geometry
+  hit: number | null;    // player id struck directly (else null)
+  barrel: number | null; // explosive-barrel id struck directly (else null)
+}
+
+// Cast the rocket from the crosshair against entities (player proxies + barrels) AND world
+// geometry (the arena collision group), and return the nearest impact point. Unlike the
+// hitscan path this reports WHERE the ray stops on a wall/floor too, so the rocket explodes
+// on cover instead of flying through it. Detonation + damage stay server-authoritative.
+export function fireRocket(
+  camera: THREE.Camera,
+  entityTargets: THREE.Object3D[],
+  worldTargets: THREE.Object3D[],
+): RocketResult {
+  _raycaster.setFromCamera(_center, camera);
+  const prevFar = _raycaster.far;
+  _raycaster.far = ROCKET_MAX_RANGE;
+
+  camera.getWorldPosition(_origin);
+  camera.getWorldDirection(_dir);
+  const o: Vec3 = [_origin.x, _origin.y, _origin.z];
+  const d: Vec3 = [_dir.x, _dir.y, _dir.z];
+
+  try {
+    const intersects = _raycaster.intersectObjects([...entityTargets, ...worldTargets], true);
+    for (const it of intersects) {
+      if (it.object.userData["noHit"]) continue; // skip nameplates / health bars
+      const point: Vec3 = [it.point.x, it.point.y, it.point.z];
+      const barrel = findBarrelId(it.object as unknown as HasUserData);
+      if (barrel !== null) return { o, d, point, hit: null, barrel };
+      const id = findPlayerId(it.object as unknown as HasUserData);
+      if (id !== null) return { o, d, point, hit: id, barrel: null };
+      return { o, d, point, hit: null, barrel: null }; // world geometry impact
+    }
+    // Nothing within range: detonate at max range straight ahead.
+    const point: Vec3 = [
+      o[0] + d[0] * ROCKET_MAX_RANGE,
+      o[1] + d[1] * ROCKET_MAX_RANGE,
+      o[2] + d[2] * ROCKET_MAX_RANGE,
+    ];
+    return { o, d, point, hit: null, barrel: null };
+  } finally {
+    _raycaster.far = prevFar; // don't leak the shorter range into the hitscan path
+  }
 }
 
 // Walk up to the topmost ancestor (the RemotePlayer group) to read its world feet y.

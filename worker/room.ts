@@ -30,11 +30,39 @@ import {
   PICKUP_RADIUS,
   PICKUP_RESPAWN_MS,
   EXPLOSIVE_BARRELS,
-  BARREL_HP,
+  BARREL_STREAK_COUNT,
+  BARREL_STREAK_WINDOW_MS,
   BARREL_RADIUS,
   BARREL_DAMAGE,
   BARREL_RESPAWN_MS,
   BARREL_HIT_RADIUS,
+  HEALTH_AMOUNT,
+  HEALTH_PICKUPS,
+  HEALTH_PICKUP_RADIUS,
+  HEALTH_RESPAWN_MS,
+  ARMOR_AMOUNT,
+  MAX_ARMOR,
+  ARMOR_PICKUPS,
+  ARMOR_PICKUP_RADIUS,
+  ARMOR_RESPAWN_MS,
+  SPRING_PICKUPS,
+  SPRING_PICKUP_RADIUS,
+  SPRING_RESPAWN_MS,
+  SPRING_DURATION_MS,
+  GRENADE_START,
+  GRENADE_MAX,
+  GRENADE_PICKUPS,
+  GRENADE_PICKUP_RADIUS,
+  GRENADE_PICKUP_RESPAWN_MS,
+  ROCKET_ID,
+  ROCKET_CLIP,
+  ROCKET_RESPAWN_MS,
+  ROCKET_PICKUP_RADIUS,
+  ROCKET_SPEED,
+  ROCKET_RADIUS,
+  ROCKET_DAMAGE,
+  ROCKET_MAX_RANGE,
+  ROCKET_TOWERS,
   decode,
   encode,
   sanitizeName,
@@ -62,6 +90,14 @@ import type {
   GrenadeMsg,
   PickupMsg,
   BarrelMsg,
+  RocketMsg,
+  RocketFxMsg,
+  WeaponPickupMsg,
+  GrenadePickupMsg,
+  HealthPickupMsg,
+  ArmorPickupMsg,
+  SpringPickupMsg,
+  FallMsg,
   Weapon,
 } from "./protocol";
 import { validateShoot, chooseSpawn } from "./validate";
@@ -92,11 +128,19 @@ interface PlayerRec {
   reserveAmmo: number[]; // rounds in reserve, per weapon id
   reloadEndsAt: number[]; // server epoch ms a reload completes, per weapon (0 = not reloading)
   lastGrenadeAt: number; // server epoch ms of the last grenade throw (cooldown)
+  grenades: number;      // grenades in hand (limited resource; refilled by pickups / on spawn)
+  hasRocket: boolean;    // is the player currently holding the rocket launcher (tower pickup)?
+  rocketAmmo: number;    // rockets left in the held launcher (dropped when it hits 0)
+  armor: number;         // armor points (soak damage before hp; 0..MAX_ARMOR)
   c: boolean;            // crouching
+  pc: boolean;           // parachute deployed (echoed for remote rendering)
 }
 
-// A thrown grenade in flight, awaiting detonation.
-interface ActiveGrenade { pos: Vec3; explodeAt: number; shooterId: number; }
+// A pending area-of-effect blast (grenade or rocket) awaiting detonation.
+interface PendingBlast { pos: Vec3; explodeAt: number; shooterId: number; radius: number; damage: number; }
+
+// Per-barrel rapid-hit streak: BARREL_STREAK_COUNT same-weapon hits within the window detonate it.
+interface BarrelStreak { by: number; w: number; count: number; lastAt: number; }
 
 export class GameRoom extends DurableObject<Env> {
   private players = new Map<WebSocket, PlayerRec>();
@@ -106,9 +150,14 @@ export class GameRoom extends DurableObject<Env> {
   private tickHandle: ReturnType<typeof setInterval> | undefined;
   private matchEndsAt = 0;     // server epoch ms the current match ends (0 = no active match)
   private matchActive = false; // a match is currently running (vs lobby / ready-up phase)
-  private grenades: ActiveGrenade[] = []; // thrown grenades awaiting detonation
+  private pendingBlasts: PendingBlast[] = []; // grenades + rockets awaiting detonation
   private pickupAvail: number[] = AMMO_PICKUPS.map(() => 0); // epoch ms each ammo crate is available again
-  private barrelHp: number[] = EXPLOSIVE_BARRELS.map(() => BARREL_HP); // explosive-barrel health
+  private grenadePickupAvail: number[] = GRENADE_PICKUPS.map(() => 0); // epoch ms each grenade crate is available again
+  private healthPickupAvail: number[] = HEALTH_PICKUPS.map(() => 0); // epoch ms each health syringe is available again
+  private armorPickupAvail: number[] = ARMOR_PICKUPS.map(() => 0);   // epoch ms each armor pickup is available again
+  private springPickupAvail: number[] = SPRING_PICKUPS.map(() => 0); // epoch ms each spring pad is available again
+  private rocketTowerDownUntil: number[] = ROCKET_TOWERS.map(() => 0); // epoch ms each tower's launcher returns
+  private barrelStreak: (BarrelStreak | null)[] = EXPLOSIVE_BARRELS.map(() => null); // rapid-hit streak per barrel
   private barrelDownUntil: number[] = EXPLOSIVE_BARRELS.map(() => 0);  // epoch ms each barrel respawns (0 = alive)
 
   async fetch(req: Request): Promise<Response> {
@@ -159,10 +208,16 @@ export class GameRoom extends DurableObject<Env> {
     rec.protectedUntil = now + SPAWN_PROTECTION_MS;
     rec.respawnAt = 0;
     rec.ammo = WEAPONS.map((w) => w.clipSize);        // full mags + reserve on (re)spawn
+    rec.ammo[ROCKET_ID] = 0;                          // the launcher tracks ammo via rocketAmmo, never the magazine
     rec.reserveAmmo = WEAPONS.map((w) => w.reserveAmmo);
     rec.reloadEndsAt = WEAPONS.map(() => 0);
     rec.lastGrenadeAt = 0;
+    rec.grenades = GRENADE_START;                     // a couple of grenades on (re)spawn
+    rec.hasRocket = false;                            // the rocket launcher is a tower pickup — lost on death
+    rec.rocketAmmo = 0;
+    rec.armor = 0;                                    // armor is lost on death (grab a pickup again)
     rec.c = false;
+    rec.pc = false;
     const msg: SpawnMsg = { t: "spawn", id: rec.id, p: rec.p, prot: SPAWN_PROTECTION_MS };
     this.broadcast(msg);
   }
@@ -194,7 +249,12 @@ export class GameRoom extends DurableObject<Env> {
       reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
       reloadEndsAt: WEAPONS.map(() => 0),
       lastGrenadeAt: 0,
+      grenades: GRENADE_START,
+      hasRocket: false,
+      rocketAmmo: 0,
+      armor: 0,
       c: false,
+      pc: false,
     };
 
     // Welcome carries the snapshots of players already IN THE MATCH (so a late joiner can
@@ -241,7 +301,12 @@ export class GameRoom extends DurableObject<Env> {
     this.matchActive = true;
     this.matchEndsAt = now + MATCH_DURATION_MS;
     this.pickupAvail = AMMO_PICKUPS.map(() => 0); // all ammo crates available at match start
-    this.barrelHp = EXPLOSIVE_BARRELS.map(() => BARREL_HP); // restore all barrels
+    this.grenadePickupAvail = GRENADE_PICKUPS.map(() => 0); // all grenade crates available
+    this.healthPickupAvail = HEALTH_PICKUPS.map(() => 0);
+    this.armorPickupAvail = ARMOR_PICKUPS.map(() => 0);
+    this.springPickupAvail = SPRING_PICKUPS.map(() => 0);
+    this.rocketTowerDownUntil = ROCKET_TOWERS.map(() => 0); // both launchers are on their towers
+    this.barrelStreak = EXPLOSIVE_BARRELS.map(() => null); // restore all barrels
     this.barrelDownUntil = EXPLOSIVE_BARRELS.map(() => 0);
     for (const rec of this.players.values()) {
       rec.frags = 0;
@@ -267,7 +332,7 @@ export class GameRoom extends DurableObject<Env> {
     const msg: MatchOverMsg = { t: "matchover", standings };
     this.broadcast(msg);
     for (const rec of this.players.values()) { rec.inMatch = false; rec.ready = false; }
-    this.grenades = [];
+    this.pendingBlasts = [];
     this.matchEndsAt = 0;
     this.broadcastLobby();
   }
@@ -351,6 +416,14 @@ export class GameRoom extends DurableObject<Env> {
       this.handleThrow(rec, msg);
       return;
     }
+    if (msg.t === "rocket") {
+      this.handleRocket(rec, msg);
+      return;
+    }
+    if (msg.t === "fall") {
+      this.handleFall(rec, msg);
+      return;
+    }
   }
 
   private ingestInput(rec: PlayerRec, m: InMsg): void {
@@ -378,12 +451,16 @@ export class GameRoom extends DurableObject<Env> {
     rec.r = [m.r[0], m.r[1]];
     rec.v = [m.v[0], m.v[1], m.v[2]];
     rec.c = !!m.c;
+    rec.pc = !!m.pc;
     rec.lastInputAt = now;
     rec.lastSeq = m.seq;
   }
 
   private handleShoot(rec: PlayerRec, m: ShootMsg): void {
     if (!rec.inMatch) return; // no combat in the lobby (inMatch ⇒ a match is active)
+    // The rocket launcher must ONLY fire via handleRocket (gated on the tower pickup + AoE). A
+    // crafted shoot with w=ROCKET_ID would otherwise be a free hitscan one-shot — reject it.
+    if (m.w === ROCKET_ID) return;
     const now = Date.now();
     const w = m.w >= 0 && m.w < WEAPONS.length ? m.w : 0;
     const weapon = WEAPONS[w]!;
@@ -457,9 +534,12 @@ export class GameRoom extends DurableObject<Env> {
   // the arc so every client renders the same flying grenade + detonation.
   private handleThrow(rec: PlayerRec, m: ThrowMsg): void {
     if (!rec.inMatch) return;
+    if (rec.st === ST_DEAD) return; // no throwing from beyond the grave
+    if (rec.grenades <= 0) return; // out of grenades (limited resource)
     const now = Date.now();
     if (now - rec.lastGrenadeAt < GRENADE_COOLDOWN_MS) return;
     rec.lastGrenadeAt = now;
+    rec.grenades -= 1;
     if (rec.st === ST_PROTECTED) { rec.st = ST_ALIVE; rec.protectedUntil = 0; }
 
     const dl = Math.hypot(m.d[0], m.d[1], m.d[2]) || 1;
@@ -472,12 +552,39 @@ export class GameRoom extends DurableObject<Env> {
       Math.max(0, m.o[1] + v[1] * t - 0.5 * g * t * t),
       m.o[2] + v[2] * t,
     ];
-    this.grenades.push({ pos, explodeAt: now + t * 1000, shooterId: rec.id });
+    this.pendingBlasts.push({ pos, explodeAt: now + t * 1000, shooterId: rec.id, radius: GRENADE_RADIUS, damage: GRENADE_DAMAGE });
     const gm: GrenadeMsg = { t: "grenade", o: m.o, v, fuseMs: t * 1000 };
     this.broadcast(gm);
   }
 
-  // AoE damage with linear falloff to everyone alive in the blast radius (grenades + barrels).
+  // Fire a rocket. The client computed the impact point against the real map geometry; we
+  // validate ownership/ammo/fire-rate, clamp the impact onto the aim ray within range (the
+  // blast still resolves against true server positions), time the detonation by flight
+  // distance, and broadcast the arc so every client renders the same rocket + blast.
+  private handleRocket(rec: PlayerRec, m: RocketMsg): void {
+    if (!rec.inMatch) return;
+    if (rec.st === ST_DEAD) return; // no firing from beyond the grave
+    if (!rec.hasRocket || rec.rocketAmmo <= 0) return;
+    const now = Date.now();
+    const weapon = WEAPONS[ROCKET_ID]!;
+    if (now - rec.lastShotAt < weapon.cooldownMs - 25) return; // fire-rate gate
+    rec.lastShotAt = now;
+    if (rec.st === ST_PROTECTED) { rec.st = ST_ALIVE; rec.protectedUntil = 0; }
+    rec.rocketAmmo -= 1;
+    if (rec.rocketAmmo <= 0) rec.hasRocket = false; // launcher is dropped when it runs dry
+
+    const dl = Math.hypot(m.d[0], m.d[1], m.d[2]) || 1;
+    const dir: Vec3 = [m.d[0] / dl, m.d[1] / dl, m.d[2] / dl];
+    const claimed = Math.hypot(m.p[0] - m.o[0], m.p[1] - m.o[1], m.p[2] - m.o[2]);
+    const dist = Math.min(claimed, ROCKET_MAX_RANGE); // respect wall impacts; clamp overlong claims
+    const pos: Vec3 = [m.o[0] + dir[0] * dist, m.o[1] + dir[1] * dist, m.o[2] + dir[2] * dist];
+    const travelMs = (dist / ROCKET_SPEED) * 1000;
+    this.pendingBlasts.push({ pos, explodeAt: now + travelMs, shooterId: rec.id, radius: ROCKET_RADIUS, damage: ROCKET_DAMAGE });
+    this.broadcast({ t: "rocketfx", o: m.o, d: dir, p: pos, travelMs } satisfies RocketFxMsg);
+  }
+
+  // AoE damage with linear falloff to everyone alive in the blast radius (grenades + barrels +
+  // rockets). Tagged as a blast so the client can gib the victim on a lethal explosion.
   private detonate(pos: Vec3, shooterId: number, radius: number, damage: number): void {
     const killer = this.byId.get(shooterId);
     for (const v of this.players.values()) {
@@ -485,14 +592,15 @@ export class GameRoom extends DurableObject<Env> {
       const dx = v.p[0] - pos[0], dy = v.p[1] - pos[1], dz = v.p[2] - pos[2];
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       if (dist > radius) continue;
-      this.applyDamage(v, damage * (1 - dist / radius), killer ?? v, false);
+      this.applyDamage(v, damage * (1 - dist / radius), killer ?? v, false, true);
     }
   }
 
-  // Handle a claimed explosive-barrel hit: validate the ray, damage it, detonate at 0 HP.
+  // Handle a claimed explosive-barrel hit: validate the ray, advance the rapid same-weapon hit
+  // streak, and detonate once BARREL_STREAK_COUNT hits land within the window.
   private handleBarrelHit(rec: PlayerRec, m: ShootMsg, b: number, weapon: Weapon, now: number): void {
     if (b < 0 || b >= EXPLOSIVE_BARRELS.length) return;
-    if (now < this.barrelDownUntil[b]! || this.barrelHp[b]! <= 0) return; // already destroyed
+    if (now < this.barrelDownUntil[b]!) return; // destroyed / respawning
     const bp = EXPLOSIVE_BARRELS[b]!;
     const cy = bp[1] + 1; // barrel centre ~1 unit up
     const ox = bp[0] - m.o[0], oy = cy - m.o[1], oz = bp[2] - m.o[2];
@@ -500,19 +608,44 @@ export class GameRoom extends DurableObject<Env> {
     if (t <= 0) return; // barrel is behind the shooter
     const px = m.o[0] + m.d[0] * t, py = m.o[1] + m.d[1] * t, pz = m.o[2] + m.d[2] * t;
     if (Math.hypot(px - bp[0], py - cy, pz - bp[2]) > BARREL_HIT_RADIUS) return; // aim missed the barrel
-    this.barrelHp[b]! -= weapon.damage;
-    if (this.barrelHp[b]! > 0) return;
-    this.barrelHp[b] = 0;
+
+    // Advance the streak: same shooter + same weapon within the window counts up; otherwise reset.
+    const s = this.barrelStreak[b];
+    if (s && s.by === rec.id && s.w === weapon.id && now - s.lastAt <= BARREL_STREAK_WINDOW_MS) {
+      s.count += 1;
+      s.lastAt = now;
+    } else {
+      this.barrelStreak[b] = { by: rec.id, w: weapon.id, count: 1, lastAt: now };
+    }
+    if (this.barrelStreak[b]!.count < BARREL_STREAK_COUNT) return; // not enough rapid hits yet
+
+    this.barrelStreak[b] = null;
     this.barrelDownUntil[b] = now + BARREL_RESPAWN_MS;
     const center: Vec3 = [bp[0], cy, bp[2]];
     this.detonate(center, rec.id, BARREL_RADIUS, BARREL_DAMAGE);
     this.broadcast({ t: "barrel", id: b, pos: center, respawnAt: this.barrelDownUntil[b]! } satisfies BarrelMsg);
   }
 
-  // Apply damage, broadcast a hit, and handle death/respawn/scoring (T7).
-  private applyDamage(target: PlayerRec, dmg: number, killer: PlayerRec, head: boolean): void {
+  // Self-inflicted fall damage claimed by the client on a hard landing. Clamp it and apply it
+  // to the sender (only while ST_ALIVE — spawn protection / dead take none).
+  private handleFall(rec: PlayerRec, m: FallMsg): void {
+    if (!rec.inMatch || rec.st !== ST_ALIVE) return;
+    const dmg = Math.max(0, Math.min(MAX_HP, Math.floor(m.dmg)));
+    if (dmg <= 0) return;
+    this.applyDamage(rec, dmg, rec, false, false); // killer === target → a suicide, no frag credit
+  }
+
+  // Apply damage (armor soaks first), broadcast a hit, and handle death/respawn/scoring.
+  private applyDamage(target: PlayerRec, dmg: number, killer: PlayerRec, head: boolean, blast = false): void {
     if (target.st === ST_DEAD || target.st === ST_PROTECTED) return;
-    target.hp -= dmg;
+    // Armor absorbs damage before health.
+    let toHp = dmg;
+    if (target.armor > 0) {
+      const soak = Math.min(target.armor, toHp);
+      target.armor -= soak;
+      toHp -= soak;
+    }
+    target.hp -= toHp;
     const hit: HitMsg = {
       t: "hit",
       by: killer.id,
@@ -528,8 +661,14 @@ export class GameRoom extends DurableObject<Env> {
       target.st = ST_DEAD;
       target.deaths += 1;
       target.respawnAt = Date.now() + RESPAWN_MS;
-      if (killer.id !== target.id) killer.frags += 1; // no frag credit for a self-kill (e.g. own grenade)
-      const kill: KillMsg = { t: "kill", by: killer.id, on: target.id, w: 0 };
+      // Drop held consumables at the moment of death (not only at respawn) so a corpse can't
+      // keep firing during the respawn window even if a stale client message arrives.
+      target.hasRocket = false;
+      target.rocketAmmo = 0;
+      target.grenades = 0;
+      target.armor = 0;
+      if (killer.id !== target.id) killer.frags += 1; // no frag credit for a self-kill (e.g. own grenade / fall)
+      const kill: KillMsg = { t: "kill", by: killer.id, on: target.id, w: 0, blast };
       this.broadcast(kill);
     }
   }
@@ -583,14 +722,14 @@ export class GameRoom extends DurableObject<Env> {
     for (const rec of this.players.values()) if (rec.inMatch) { anyInMatch = true; break; }
     if (!anyInMatch) { this.endMatch(); return; }
 
-    // Detonate grenades whose fuse has elapsed (AoE damage).
-    if (this.grenades.length) {
-      const remaining: ActiveGrenade[] = [];
-      for (const gr of this.grenades) {
-        if (now >= gr.explodeAt) this.detonate(gr.pos, gr.shooterId, GRENADE_RADIUS, GRENADE_DAMAGE);
-        else remaining.push(gr);
+    // Detonate grenades + rockets whose fuse / flight time has elapsed (AoE damage).
+    if (this.pendingBlasts.length) {
+      const remaining: PendingBlast[] = [];
+      for (const b of this.pendingBlasts) {
+        if (now >= b.explodeAt) this.detonate(b.pos, b.shooterId, b.radius, b.damage);
+        else remaining.push(b);
       }
-      this.grenades = remaining;
+      this.pendingBlasts = remaining;
     }
 
     // Ammo pickups: refill reserve when a player walks over an available crate.
@@ -611,10 +750,89 @@ export class GameRoom extends DurableObject<Env> {
       }
     }
 
+    // Grenade pickups: top a player up to GRENADE_MAX when they walk over an available crate.
+    for (let i = 0; i < GRENADE_PICKUPS.length; i++) {
+      if (now < this.grenadePickupAvail[i]!) continue;
+      const c = GRENADE_PICKUPS[i]!;
+      for (const rec of this.players.values()) {
+        if (!rec.inMatch || rec.st === ST_DEAD) continue;
+        if (rec.grenades >= GRENADE_MAX) continue; // already topped up
+        const dx = rec.p[0] - c[0], dz = rec.p[2] - c[2];
+        if (dx * dx + dz * dz > GRENADE_PICKUP_RADIUS * GRENADE_PICKUP_RADIUS) continue;
+        rec.grenades = GRENADE_MAX;
+        this.grenadePickupAvail[i] = now + GRENADE_PICKUP_RESPAWN_MS;
+        this.broadcast({ t: "gpickup", id: i, by: rec.id, availableAt: this.grenadePickupAvail[i]! } satisfies GrenadePickupMsg);
+        break; // one taker per crate per tick
+      }
+    }
+
+    // Health syringes: heal a hurt player to full when they walk over an available one.
+    for (let i = 0; i < HEALTH_PICKUPS.length; i++) {
+      if (now < this.healthPickupAvail[i]!) continue;
+      const c = HEALTH_PICKUPS[i]!;
+      for (const rec of this.players.values()) {
+        if (!rec.inMatch || rec.st === ST_DEAD || rec.hp >= MAX_HP) continue;
+        const dx = rec.p[0] - c[0], dz = rec.p[2] - c[2];
+        if (dx * dx + dz * dz > HEALTH_PICKUP_RADIUS * HEALTH_PICKUP_RADIUS) continue;
+        rec.hp = HEALTH_AMOUNT;
+        this.healthPickupAvail[i] = now + HEALTH_RESPAWN_MS;
+        this.broadcast({ t: "hpickup", id: i, by: rec.id, availableAt: this.healthPickupAvail[i]! } satisfies HealthPickupMsg);
+        break;
+      }
+    }
+
+    // Armor: grant ARMOR_AMOUNT to a player who isn't already topped up.
+    for (let i = 0; i < ARMOR_PICKUPS.length; i++) {
+      if (now < this.armorPickupAvail[i]!) continue;
+      const c = ARMOR_PICKUPS[i]!;
+      for (const rec of this.players.values()) {
+        if (!rec.inMatch || rec.st === ST_DEAD || rec.armor >= MAX_ARMOR) continue;
+        const dx = rec.p[0] - c[0], dz = rec.p[2] - c[2];
+        if (dx * dx + dz * dz > ARMOR_PICKUP_RADIUS * ARMOR_PICKUP_RADIUS) continue;
+        rec.armor = ARMOR_AMOUNT;
+        this.armorPickupAvail[i] = now + ARMOR_RESPAWN_MS;
+        this.broadcast({ t: "apickup", id: i, by: rec.id, availableAt: this.armorPickupAvail[i]! } satisfies ArmorPickupMsg);
+        break;
+      }
+    }
+
+    // Spring boots: grant a timed super-jump (jump is client-side; the server just manages the
+    // pickup + its respawn, and tells the taker the duration). Any living player can grab one.
+    for (let i = 0; i < SPRING_PICKUPS.length; i++) {
+      if (now < this.springPickupAvail[i]!) continue;
+      const c = SPRING_PICKUPS[i]!;
+      for (const rec of this.players.values()) {
+        if (!rec.inMatch || rec.st === ST_DEAD) continue;
+        const dx = rec.p[0] - c[0], dz = rec.p[2] - c[2];
+        if (dx * dx + dz * dz > SPRING_PICKUP_RADIUS * SPRING_PICKUP_RADIUS) continue;
+        this.springPickupAvail[i] = now + SPRING_RESPAWN_MS;
+        this.broadcast({ t: "sppickup", id: i, by: rec.id, availableAt: this.springPickupAvail[i]!, durationMs: SPRING_DURATION_MS } satisfies SpringPickupMsg);
+        break;
+      }
+    }
+
+    // Rocket launcher tower pickups: a living player who climbs onto either non-center tower top
+    // (and isn't already holding the launcher) claims it for ROCKET_CLIP rockets; it returns later.
+    for (let ti = 0; ti < ROCKET_TOWERS.length; ti++) {
+      if (now < this.rocketTowerDownUntil[ti]!) continue;
+      const [tx, ty, tz] = ROCKET_TOWERS[ti]!;
+      for (const rec of this.players.values()) {
+        if (!rec.inMatch || rec.st === ST_DEAD || rec.hasRocket) continue;
+        if (rec.p[1] < ty - 2) continue; // must be up on the tower, not standing under it
+        const dx = rec.p[0] - tx, dz = rec.p[2] - tz;
+        if (dx * dx + dz * dz > ROCKET_PICKUP_RADIUS * ROCKET_PICKUP_RADIUS) continue;
+        rec.hasRocket = true;
+        rec.rocketAmmo = ROCKET_CLIP;
+        this.rocketTowerDownUntil[ti] = now + ROCKET_RESPAWN_MS;
+        this.broadcast({ t: "weaponpickup", id: ti, by: rec.id, availableAt: this.rocketTowerDownUntil[ti]! } satisfies WeaponPickupMsg);
+        break; // one taker per tower per tick
+      }
+    }
+
     // Respawn destroyed barrels (client re-shows them via its own timer).
     for (let b = 0; b < EXPLOSIVE_BARRELS.length; b++) {
       if (this.barrelDownUntil[b]! !== 0 && now >= this.barrelDownUntil[b]!) {
-        this.barrelHp[b] = BARREL_HP;
+        this.barrelStreak[b] = null;
         this.barrelDownUntil[b] = 0;
       }
     }
@@ -660,6 +878,9 @@ export class GameRoom extends DurableObject<Env> {
       frags: rec.frags,
       deaths: rec.deaths,
       c: rec.c,
+      g: rec.grenades,
+      a: rec.armor,
+      pc: rec.pc,
     };
   }
 
