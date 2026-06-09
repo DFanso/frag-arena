@@ -29,6 +29,8 @@ import {
   CREDITS_PER_HIT,
   CREDITS_PER_KILL,
   addCredits,
+  defaultOwnedWeapons,
+  canBuy,
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
   MOVE_BUDGET_SEC,
@@ -114,6 +116,8 @@ import type {
   SpringPickupMsg,
   FallMsg,
   ChatMsg,
+  BuyMsg,
+  BoughtMsg,
   Weapon,
 } from "./protocol";
 import { validateShoot, chooseSpawn, isHeadshot } from "./validate";
@@ -131,6 +135,7 @@ interface PlayerRec {
   frags: number;
   deaths: number;
   credits: number;     // CS-style currency: earned on hits/kills, reset at match start (issue #25)
+  ownedWeapons: boolean[]; // buy menu (issue #26): per-WEAPONS-id ownership; only DEFAULT_WEAPON free
   lastShotAt: number;
   lastInputAt: number;
   respawnAt: number;
@@ -252,6 +257,10 @@ export class GameRoomCore {
       this.handleChat(rec, msg);
       return;
     }
+    if (msg.t === "buy") {
+      this.handleBuy(rec, msg);
+      return;
+    }
   }
 
   // ---- match / player lifecycle ----
@@ -304,6 +313,7 @@ export class GameRoomCore {
       frags: 0,
       deaths: 0,
       credits: STARTING_CREDITS, // reset again at startMatch; seeded here so a lobby snap is sane
+      ownedWeapons: defaultOwnedWeapons(), // only the free Rifle until bought (issue #26)
       lastShotAt: 0,
       lastInputAt: now,
       respawnAt: 0,
@@ -380,6 +390,7 @@ export class GameRoomCore {
       rec.frags = 0;
       rec.deaths = 0;
       rec.credits = STARTING_CREDITS; // fresh economy each match (issue #25)
+      rec.ownedWeapons = defaultOwnedWeapons(); // back to the free starter; rebuy each match (issue #26)
       rec.ready = false;
       rec.inMatch = true;
       rec.lastInputAt = now; // fresh idle window — they were in the lobby, not sending input
@@ -480,6 +491,9 @@ export class GameRoomCore {
     if (m.w === ROCKET_ID) return;
     const now = Date.now();
     const w = m.w >= 0 && m.w < WEAPONS.length ? m.w : 0;
+    // Buy menu (issue #26): only an OWNED weapon may fire. The client can't fire a gun it never
+    // purchased — ownership is server-authoritative (the Rifle is free; others must be bought).
+    if (!rec.ownedWeapons[w]) return;
     const weapon = WEAPONS[w]!;
     this.completeReloadIfDue(rec, w, now);
     if (rec.reloadEndsAt[w]! > now) return; // gun can't fire mid-reload
@@ -666,6 +680,21 @@ export class GameRoomCore {
     if (now - rec.lastChatAt < CHAT_MIN_INTERVAL_MS) return; // too fast (chat flood guard)
     rec.lastChatAt = now;
     this.broadcast({ t: "chat", from: rec.id, name: rec.name, body } satisfies ChatMsg);
+  }
+
+  // Buy menu (issue #26): purchase + equip a weapon. Server-authoritative end of the CS-style
+  // economy — validates the buy (match active + sender in-match + weapon buyable + affordable +
+  // not already owned via the shared `canBuy`), deducts the cost, grants ownership, and replies
+  // with a `bought` so the client equips it and refreshes its balance. An invalid request is
+  // silently dropped (no reply). Buying is allowed any time during a live match (the menu opens
+  // mid-fight); the new gun then passes the handleShoot ownership gate.
+  private handleBuy(rec: PlayerRec, m: BuyMsg): void {
+    if (!this.matchActive || !rec.inMatch) return; // nothing to buy in the lobby
+    const id = m.weaponId;
+    if (!canBuy(id, rec.credits, rec.ownedWeapons)) return; // unknown / non-buyable / owned / too poor
+    rec.credits = addCredits(rec.credits, -WEAPONS[id]!.cost); // deduct (clamps ≥ 0)
+    rec.ownedWeapons[id] = true;
+    this.send(rec.ws, { t: "bought", weaponId: id, credits: rec.credits } satisfies BoughtMsg);
   }
 
   // Apply damage (armor soaks first), broadcast a hit, and handle death/respawn/scoring.
