@@ -33,6 +33,7 @@ import type {
   HealthPickupMsg,
   ArmorPickupMsg,
   SpringPickupMsg,
+  ChatMsg,
 } from "../worker/protocol";
 import { Net } from "./net";
 import { buildArena, MINIMAP_BUILDINGS, ARENA_HALF } from "./map";
@@ -629,6 +630,23 @@ async function main(): Promise<void> {
     if (m.by === myId) { controls.grantSpring(m.durationMs); sfx.pickup(); }
   });
 
+  // Text chat (issue #10): append incoming messages to the HUD log. Opening the input releases
+  // pointer lock so typing doesn't drive the camera/fire; closing it re-locks if we were locked
+  // (i.e. mid-match) so play resumes seamlessly. The server is authoritative for sender + body.
+  net.on("chat", (m: ChatMsg) => hud.addChat(m));
+  let wasLockedBeforeChat = false;
+  hud.onChat(
+    (body) => net.send({ t: "chat", from: myId, name, body }),
+    (open) => {
+      if (open) {
+        wasLockedBeforeChat = controls.isLocked;
+        if (controls.isLocked) controls.unlock();
+      } else if (wasLockedBeforeChat) {
+        controls.lock();
+      }
+    },
+  );
+
   net.on("matchstart", (m: MatchStartMsg) => {
     matchEndsAt = m.endsAt;
     phase = "match";
@@ -720,7 +738,9 @@ async function main(): Promise<void> {
   let hasEverLocked = false;
   controls.onLockChange((locked: boolean) => {
     if (locked) { hasEverLocked = true; pauseOverlay.style.display = "none"; }
-    else if (hasEverLocked) { pauseOverlay.style.display = "flex"; }
+    // Don't surface the pause menu when the unlock was caused by opening the chat input (#10) —
+    // chat re-locks on its own when done.
+    else if (hasEverLocked && !hud.chatInputActive) { pauseOverlay.style.display = "flex"; }
   });
 
   // ---- resize --------------------------------------------------------------

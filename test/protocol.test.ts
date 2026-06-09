@@ -4,6 +4,8 @@ import {
   decode,
   sanitizeRoom,
   sanitizeName,
+  sanitizeChat,
+  CHAT_MAX_LEN,
   SERVER_TICK_HZ,
   WEAPONS,
   ROCKET_ID,
@@ -15,6 +17,7 @@ import {
   type SnapMsg,
   type RocketMsg,
   type RocketFxMsg,
+  type ChatMsg,
 } from "../worker/protocol";
 
 describe("encode/decode round-trip", () => {
@@ -114,6 +117,33 @@ describe("sanitizeName", () => {
     const long = "x".repeat(30);
     expect(sanitizeName(long)).toBe("x".repeat(16));
     expect(sanitizeName(long).length).toBe(16);
+  });
+});
+
+describe("sanitizeChat (issue #10)", () => {
+  it("returns '' for undefined / empty / blank input", () => {
+    expect(sanitizeChat(undefined)).toBe("");
+    expect(sanitizeChat("")).toBe("");
+    expect(sanitizeChat("   \t  ")).toBe("");
+  });
+  it("collapses internal whitespace runs and trims the ends", () => {
+    expect(sanitizeChat("  hello    world  ")).toBe("hello world");
+    expect(sanitizeChat("nice\tshot\n\nGG")).toBe("nice shot GG");
+  });
+  it("strips non-printable / non-ASCII characters", () => {
+    expect(sanitizeChat("gg\u{1F600}wp")).toBe("gg wp"); // emoji → space → collapsed/trim
+    expect(sanitizeChat("héllo")).toBe("h llo");
+  });
+  it("caps length at CHAT_MAX_LEN", () => {
+    const long = "a".repeat(CHAT_MAX_LEN + 40);
+    expect(sanitizeChat(long).length).toBe(CHAT_MAX_LEN);
+  });
+});
+
+describe("ChatMsg round-trip (issue #10)", () => {
+  it("round-trips a ChatMsg", () => {
+    const msg: ChatMsg = { t: "chat", from: 3, name: "neo", body: "follow the white rabbit" };
+    expect(decode<ChatMsg>(encode(msg))).toEqual(msg);
   });
 });
 
