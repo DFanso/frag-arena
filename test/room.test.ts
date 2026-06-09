@@ -67,8 +67,10 @@ function roomStub(roomName: string) {
 async function connect(
   stub: DurableObjectStub,
   name = "p",
+  token?: string,
 ): Promise<WebSocket> {
-  const url = "https://do/ws/test?name=" + encodeURIComponent(name);
+  let url = "https://do/ws/test?name=" + encodeURIComponent(name);
+  if (token) url += "&token=" + encodeURIComponent(token);
   const res = await stub.fetch(url, { headers: { Upgrade: "websocket" } });
   expect(res.status).toBe(101);
   const ws = res.webSocket;
@@ -1453,5 +1455,53 @@ describe("GameRoom out-of-bounds kill floor (issue #23)", () => {
       expect(rec.st).toBe(ST_ALIVE);
       expect(rec.deaths).toBe(0);
     });
+  });
+});
+
+// ---- reconnection identity (issue #12) ----
+describe("GameRoom reconnect identity", () => {
+  it("restores id + score + in-match state on reconnect with the session token", async () => {
+    const stub = roomStub("reconnect-restore");
+    const a = await connect(stub, "alice");
+    const w1 = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    expect(w1.rejoin).toBe(false);
+    expect(typeof w1.token).toBe("string");
+    expect(w1.token.length).toBeGreaterThan(0);
+
+    // Put alice into a live match with a score, then simulate a disconnect (saves identity).
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.startMatch();
+      const rec = i.byId.get(w1.id);
+      rec.frags = 7;
+      rec.deaths = 2;
+      i.removePlayer(rec.ws);
+      expect(i.byId.has(w1.id)).toBe(false);
+    });
+
+    // Reconnect with the same token → same id, restored score, back in the match.
+    const a2 = await connect(stub, "alice", w1.token);
+    const w2 = await nextMessage<WelcomeMsg>(a2, ["welcome"]);
+    expect(w2.rejoin).toBe(true);
+    expect(w2.id).toBe(w1.id);
+    expect(w2.token).toBe(w1.token);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      const rec = i.byId.get(w1.id);
+      expect(rec.frags).toBe(7);
+      expect(rec.deaths).toBe(2);
+      expect(rec.inMatch).toBe(true);
+    });
+    a2.close();
+  });
+
+  it("joins fresh (rejoin=false) when the reconnect token is unknown", async () => {
+    const stub = roomStub("reconnect-unknown");
+    const a = await connect(stub, "bob", "not-a-real-token");
+    const w = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    expect(w.rejoin).toBe(false);
+    expect(typeof w.token).toBe("string");
+    expect(w.token.length).toBeGreaterThan(0);
+    a.close();
   });
 });
