@@ -259,3 +259,15 @@ describe("rocket message round-trips", () => {
     expect(decode<RocketFxMsg>(encode(msg))).toEqual(msg);
   });
 });
+
+describe("canBuy non-integer DoS guard (review fix #26)", () => {
+  it("rejects a non-integer weaponId WITHOUT throwing", () => {
+    const owned = defaultOwnedWeapons().map(() => false);
+    // {t:"buy",weaponId:1.5} is in [0,WEAPONS.length) but WEAPONS[1.5] is undefined → an unguarded
+    // deref throws and crashes the DO / Node process from routeMessage.
+    for (const bad of [1.5, 0.1, 2.9, NaN, Infinity, -0.5]) {
+      expect(() => canBuy(bad, 999999, owned)).not.toThrow();
+      expect(canBuy(bad, 999999, owned)).toBe(false);
+    }
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ConnRateLimiter } from "../worker/ratelimit";
+import { ConnRateLimiter, pickClientIp } from "../worker/ratelimit";
 
 describe("ConnRateLimiter", () => {
   it("allows hits up to the limit, then blocks within the window", () => {
@@ -52,5 +52,21 @@ describe("ConnRateLimiter", () => {
     expect(rl.hit("a", 0)).toBe(true);
     expect(rl.hit("a", 1)).toBe(false);
     expect(rl.count("a", 2)).toBe(2);
+  });
+});
+
+describe("pickClientIp (XFF trust gate, review fix #15)", () => {
+  it("ignores X-Forwarded-For when not trusting a proxy (anti-spoof default)", () => {
+    expect(pickClientIp("1.2.3.4", "10.0.0.9", false)).toBe("10.0.0.9");
+    expect(pickClientIp("evil, 1.2.3.4", "10.0.0.9", false)).toBe("10.0.0.9");
+  });
+  it("falls back to the socket address when there is no usable XFF", () => {
+    expect(pickClientIp(undefined, "10.0.0.9", true)).toBe("10.0.0.9");
+    expect(pickClientIp("", "10.0.0.9", true)).toBe("10.0.0.9");
+    expect(pickClientIp(undefined, undefined, false)).toBe("unknown");
+  });
+  it("when trusting a proxy, takes the LAST hop (client-prepended value ignored)", () => {
+    expect(pickClientIp("evil, 203.0.113.7", "10.0.0.9", true)).toBe("203.0.113.7");
+    expect(pickClientIp(["a", "b, 203.0.113.7"], "10.0.0.9", true)).toBe("203.0.113.7");
   });
 });
