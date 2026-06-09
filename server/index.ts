@@ -11,8 +11,13 @@ import { WebSocketServer } from "ws";
 import type { WebSocket as WsSocket } from "ws";
 import { join } from "node:path";
 import { GameRoomCore } from "../worker/game-core";
-import { sanitizeRoom } from "../worker/protocol";
+import {
+  sanitizeRoom,
+  WS_CONN_LIMIT_PER_IP,
+  WS_CONN_WINDOW_MS,
+} from "../worker/protocol";
 import type { Conn } from "../worker/protocol";
+import { ConnRateLimiter } from "../worker/ratelimit";
 
 const PORT = Number(process.env.PORT ?? 8080);
 // Static root, cwd-relative. The Dockerfile sets WORKDIR /app and copies the client to
@@ -21,6 +26,21 @@ const STATIC_ROOT = process.env.STATIC_ROOT ?? "dist/client";
 
 // ---- HTTP (Hono on @hono/node-server) ----
 const app = new Hono();
+// Security headers on every response. The Cloudflare deploy gets these from public/_headers
+// (served by the Workers Assets binding); the Node host serves the same client, so it must set
+// the identical set itself. Keep the CSP in sync with public/_headers.
+const CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; " +
+  "worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'; " +
+  "object-src 'none'; frame-ancestors 'none'";
+app.use("/*", async (c, next) => {
+  await next();
+  c.header("Content-Security-Policy", CSP);
+  c.header("X-Frame-Options", "DENY");
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+});
 app.get("/api/health", (c) => c.json({ ok: true }));
 // Real static files (hashed JS/CSS, models, textures, and index.html for "/").
 app.use("/*", serveStatic({ root: STATIC_ROOT }));
@@ -50,6 +70,15 @@ const wss = new WebSocketServer({ noServer: true });
 // Heartbeat liveness (replaces the DO's setWebSocketAutoResponse keep-alive + dead-socket
 // reaping). Browsers auto-answer protocol pings; a socket that misses a round is terminated.
 const alive = new WeakMap<WsSocket, boolean>();
+// Per-IP WebSocket-upgrade flood guard (issue #15), mirroring the Cloudflare worker. Behind a
+// reverse proxy (Dokploy) the client IP is the first X-Forwarded-For hop; fall back to the raw
+// socket address. Reuses the shared pure limiter.
+const wsLimiter = new ConnRateLimiter(WS_CONN_LIMIT_PER_IP, WS_CONN_WINDOW_MS);
+function clientIp(req: import("node:http").IncomingMessage): string {
+  const fwd = req.headers["x-forwarded-for"];
+  const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0]?.trim();
+  return first || req.socket.remoteAddress || "unknown";
+}
 
 server.on("upgrade", (req, socket, head) => {
   let pathname: string;
@@ -65,6 +94,13 @@ server.on("upgrade", (req, socket, head) => {
   const m = /^\/ws\/([^/?]+)$/.exec(pathname);
   if (!m) {
     socket.destroy(); // not our path — refuse the upgrade
+    return;
+  }
+  // Throttle before the upgrade handshake. Refuse floods with a 429 then drop the socket.
+  wsLimiter.sweep();
+  if (!wsLimiter.hit(clientIp(req))) {
+    socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+    socket.destroy();
     return;
   }
   const roomCode = sanitizeRoom(decodeURIComponent(m[1]!));
