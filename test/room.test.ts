@@ -39,6 +39,8 @@ import {
   ARMOR_PICKUPS,
   SPRING_PICKUPS,
   SPRING_DURATION_MS,
+  CHAT_MIN_INTERVAL_MS,
+  CHAT_MAX_LEN,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -425,6 +427,7 @@ function makeRec(
     reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
     reloadEndsAt: WEAPONS.map(() => 0),
     lastGrenadeAt: 0,
+    lastChatAt: 0,
     grenades: opts.grenades ?? GRENADE_START,
     hasRocket: opts.hasRocket ?? false,
     rocketAmmo: opts.rocketAmmo ?? 0,
@@ -440,6 +443,7 @@ type RoomInternals = {
   byId: Map<number, ReturnType<typeof makeRec>>;
   broadcast: (m: unknown) => void;
   handleShoot: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
+  handleChat: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
   loopTick: () => void;
   ingestInput: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
   webSocketMessage: (ws: WebSocket, raw: string | ArrayBuffer) => void;
@@ -1449,6 +1453,102 @@ describe("GameRoom out-of-bounds kill floor (issue #23)", () => {
       inst.ingestInput(rec, { t: "in", seq: 1, ts: now, p: [0, KZ_FLOOR + 1, 0], r: [0, 0], v: [0, 0, 0] });
       expect(rec.st).toBe(ST_ALIVE);
       expect(rec.deaths).toBe(0);
+    });
+  });
+});
+
+// ---- text chat (issue #10) ----
+describe("GameRoom.handleChat", () => {
+  it("re-broadcasts a sanitized chat with the SERVER's id/name (ignores the client's claim)", async () => {
+    const stub = env.ROOMS.getByName("chat-broadcast");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m) => broadcasts.push(m);
+      const rec = makeRec(1, [0, 1, 0]);
+      rec.name = "alice";
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+
+      // A client tries to spoof a different id/name; the server overrides both with its own.
+      inst.handleChat(rec, { t: "chat", from: 999, name: "admin", body: "  gg   wp  " });
+
+      const chat = broadcasts.find((b) => (b as { t?: string }).t === "chat") as
+        | { from: number; name: string; body: string }
+        | undefined;
+      expect(chat).toBeDefined();
+      expect(chat!.from).toBe(1);          // server id, not the spoofed 999
+      expect(chat!.name).toBe("alice");    // server name, not the spoofed "admin"
+      expect(chat!.body).toBe("gg wp");    // whitespace collapsed + trimmed
+    });
+  });
+
+  it("drops an empty / whitespace-only message (nothing to broadcast)", async () => {
+    const stub = env.ROOMS.getByName("chat-empty");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m) => broadcasts.push(m);
+      const rec = makeRec(1, [0, 1, 0]);
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+
+      inst.handleChat(rec, { t: "chat", from: 1, name: "p1", body: "    " });
+      expect(broadcasts.some((b) => (b as { t?: string }).t === "chat")).toBe(false);
+    });
+  });
+
+  it("caps the body length at CHAT_MAX_LEN", async () => {
+    const stub = env.ROOMS.getByName("chat-cap");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m) => broadcasts.push(m);
+      const rec = makeRec(1, [0, 1, 0]);
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+
+      inst.handleChat(rec, { t: "chat", from: 1, name: "p1", body: "a".repeat(CHAT_MAX_LEN + 50) });
+      const chat = broadcasts.find((b) => (b as { t?: string }).t === "chat") as { body: string } | undefined;
+      expect(chat!.body.length).toBe(CHAT_MAX_LEN);
+    });
+  });
+
+  it("rate-limits a chat flood to one message per CHAT_MIN_INTERVAL_MS window", async () => {
+    const stub = env.ROOMS.getByName("chat-flood");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m) => broadcasts.push(m);
+      const rec = makeRec(1, [0, 1, 0]);
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+
+      // Two back-to-back messages: only the first is accepted (the second is inside the cooldown).
+      inst.handleChat(rec, { t: "chat", from: 1, name: "p1", body: "first" });
+      inst.handleChat(rec, { t: "chat", from: 1, name: "p1", body: "second (too fast)" });
+      const count = broadcasts.filter((b) => (b as { t?: string }).t === "chat").length;
+      expect(count).toBe(1);
+
+      // After the cooldown elapses, a further message is accepted again.
+      rec.lastChatAt = Date.now() - CHAT_MIN_INTERVAL_MS - 1;
+      inst.handleChat(rec, { t: "chat", from: 1, name: "p1", body: "third (ok)" });
+      expect(broadcasts.filter((b) => (b as { t?: string }).t === "chat").length).toBe(2);
+    });
+  });
+
+  it("works in the lobby (chat does not require being in a match)", async () => {
+    const stub = env.ROOMS.getByName("chat-lobby");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m) => broadcasts.push(m);
+      const rec = makeRec(1, [0, 1, 0], { inMatch: false }); // lobby-only player
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+
+      inst.handleChat(rec, { t: "chat", from: 1, name: "p1", body: "hi lobby" });
+      expect(broadcasts.some((b) => (b as { t?: string }).t === "chat")).toBe(true);
     });
   });
 });
