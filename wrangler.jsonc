@@ -12,5 +12,18 @@
   },
   "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "GameRoom" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GameRoom"] }],
+  // Cap per-invocation CPU so a pathological request can't run away with the free-tier budget.
+  // The /ws upgrade handler is cheap (a Map lookup in the in-isolate ConnRateLimiter, then a DO
+  // fetch), so 50ms is generous headroom.
+  "limits": { "cpu_ms": 50 },
+  // Edge backstop for the per-IP WebSocket flood guard (issue #15). The in-Worker limiter in
+  // worker/index.ts (WS_CONN_LIMIT_PER_IP / WS_CONN_WINDOW_MS) blunts bursts cheaply but is
+  // per-isolate and best-effort; the authoritative, globally-consistent cap is a Cloudflare WAF
+  // rate-limiting rule applied at the edge — it can't be expressed in wrangler config, so apply
+  // it once in the dashboard (Security -> WAF -> Rate limiting rules):
+  //   When incoming requests match:  (http.request.uri.path matches "^/ws/")
+  //   Rate:                          12 requests per 1 minute, counting by  ip.src
+  //   Then:                          Block  (or Managed Challenge)  for 1 minute
+  // Keep the rate aligned with WS_CONN_LIMIT_PER_IP / WS_CONN_WINDOW_MS in worker/protocol.ts.
   "observability": { "enabled": true }
 }
