@@ -64,6 +64,29 @@ export function buildArena(reg: MapProps = {}): { collision: THREE.Group; visual
   if (stoneTex) stoneTex.repeat.set(2, 2);
   const structMat = stoneTex ? new THREE.MeshStandardMaterial({ map: stoneTex, roughness: 1 }) : null;
 
+  // The rock GLB ships with a flat, glossy, light-grey "Stone" material and NO texture map, so
+  // rocks render as untextured near-white blobs. Paint the loaded stone texture onto the rock's
+  // shared material (the mesh has UVs) so rocks get real surface detail like the walls. Instances
+  // are cloned with cloneSkeleton, which shares materials by reference, so this one edit covers all.
+  if (reg.rock && stoneTex) {
+    const rockTex = stoneTex.clone(); // own repeat, independent of the wall texture
+    rockTex.needsUpdate = true;
+    rockTex.repeat.set(1, 1);
+    reg.rock.scene.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const mat of mats) {
+        const sm = mat as THREE.MeshStandardMaterial;
+        sm.map = rockTex;
+        sm.color.set(0xffffff); // let the texture show true (matches the structural stone look)
+        sm.metalness = 0;
+        sm.roughness = 1;
+        sm.needsUpdate = true;
+      }
+    });
+  }
+
   const cbox = (w: number, h: number, d: number, x: number, y: number, z: number, rotX = 0, rotZ = 0): void => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial());
     m.position.set(x, y, z);
