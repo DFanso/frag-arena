@@ -7,11 +7,17 @@ import {
   ladderContains,
   clampHorizontalSpeed,
   fallDamage,
+  strideInterval,
+  advanceStride,
   MAX_DELTA,
   MAX_GROUND_SPEED,
   MOVE_SPEED,
   SPRINT_MULT,
   DAMPING_GROUND,
+  STRIDE_WALK,
+  STRIDE_SPRINT,
+  STRIDE_CROUCH,
+  STEP_MIN_SPEED,
 } from "../src/controls";
 import { FALL_SAFE_DIST } from "../worker/protocol";
 import { MAX_MOVE_SPEED, MOVE_SPEED_TOLERANCE } from "../worker/protocol";
@@ -120,5 +126,60 @@ describe("fallDamage", () => {
   it("scales with the distance fallen beyond the safe distance", () => {
     expect(fallDamage(FALL_SAFE_DIST + 1)).toBeGreaterThan(0);
     expect(fallDamage(FALL_SAFE_DIST + 10)).toBeGreaterThan(fallDamage(FALL_SAFE_DIST + 5));
+  });
+});
+
+describe("strideInterval (#21 footstep cadence)", () => {
+  it("returns the walk cadence by default", () => {
+    expect(strideInterval(false, false)).toBe(STRIDE_WALK);
+  });
+  it("sprinting gives a faster (shorter) cadence than walking", () => {
+    expect(strideInterval(true, false)).toBe(STRIDE_SPRINT);
+    expect(STRIDE_SPRINT).toBeLessThan(STRIDE_WALK);
+  });
+  it("crouching gives a slower (longer) cadence and overrides sprint", () => {
+    expect(strideInterval(false, true)).toBe(STRIDE_CROUCH);
+    expect(strideInterval(true, true)).toBe(STRIDE_CROUCH); // can't sprint while crouched
+    expect(STRIDE_CROUCH).toBeGreaterThan(STRIDE_WALK);
+  });
+});
+
+describe("advanceStride (#21 footstep timer)", () => {
+  const FAST = STEP_MIN_SPEED + 5; // comfortably above the standing-still threshold
+
+  it("fires no step while airborne and holds the accumulator below the interval", () => {
+    const r = advanceStride(0.39, 0.1, FAST, false, STRIDE_WALK);
+    expect(r.steps).toBe(0);
+    expect(r.acc).toBeLessThanOrEqual(STRIDE_WALK);
+  });
+
+  it("fires no step when standing still (below STEP_MIN_SPEED), even when grounded", () => {
+    const r = advanceStride(0.2, 0.1, STEP_MIN_SPEED - 0.1, true, STRIDE_WALK);
+    expect(r.steps).toBe(0);
+  });
+
+  it("accumulates without firing until the interval is reached", () => {
+    const r = advanceStride(0, 0.2, FAST, true, STRIDE_WALK);
+    expect(r.steps).toBe(0);
+    expect(r.acc).toBeCloseTo(0.2, 6);
+  });
+
+  it("fires exactly one step when the interval is crossed and carries the remainder", () => {
+    const r = advanceStride(0.35, 0.1, FAST, true, STRIDE_WALK); // 0.45 >= 0.40
+    expect(r.steps).toBe(1);
+    expect(r.acc).toBeCloseTo(0.05, 6);
+  });
+
+  it("fires multiple steps on a large (clamped) delta", () => {
+    const r = advanceStride(0, 0.85, FAST, true, STRIDE_WALK); // 0.85 / 0.40 = 2 steps
+    expect(r.steps).toBe(2);
+    expect(r.acc).toBeCloseTo(0.05, 6);
+  });
+
+  it("clamps a stale accumulator down to the interval when not stepping", () => {
+    // a long airborne stretch shouldn't bank up many instant steps on landing
+    const r = advanceStride(99, 0.016, FAST, false, STRIDE_WALK);
+    expect(r.acc).toBe(STRIDE_WALK);
+    expect(r.steps).toBe(0);
   });
 });
