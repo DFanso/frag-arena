@@ -1,6 +1,6 @@
 // src/hud.ts — HUD overlay: crosshair, health bar, prompt, scoreboard, kill feed, hit marker.
 import { MAX_HP, MAX_ARMOR, SPRING_DURATION_MS } from "../worker/protocol";
-import type { PlayerSnap, KillMsg, Standing } from "../worker/protocol";
+import type { PlayerSnap, KillMsg, Standing, Vec3 } from "../worker/protocol";
 import { countdownText, deathMessage } from "./death-ui";
 import { formatClock } from "./match-ui";
 import { playerColor } from "./colors";
@@ -32,6 +32,26 @@ export function pruneKillFeed(entries: KillFeedEntry[], now: number): KillFeedEn
   return entries.filter((e) => now - e.at < KILL_FEED_TTL_MS);
 }
 
+/**
+ * Pure: screen-relative bearing (degrees) from the local player to a world point,
+ * given the camera yaw (radians, three.js YXZ Euler `y`). Clockwise-positive to match
+ * CSS `rotate()`: 0 = dead ahead (top of screen), +90 = right, ±180 = behind (bottom),
+ * -90 = left. The vertical (y) axis is ignored — this is a horizontal compass bearing.
+ *
+ * Camera at yaw θ looks along forward (-sinθ, -cosθ) in the XZ plane with screen-right
+ * (cosθ, -sinθ). Projecting the attacker delta onto those axes and taking atan2 gives the
+ * bearing in the player's view frame, so it stays correct however the camera is turned.
+ */
+export function damageDirectionAngle(self: Vec3, attacker: Vec3, yaw: number): number {
+  const dx = attacker[0] - self[0];
+  const dz = attacker[2] - self[2];
+  const sin = Math.sin(yaw);
+  const cos = Math.cos(yaw);
+  const fwd = dx * -sin + dz * -cos;  // component along camera forward
+  const right = dx * cos + dz * -sin; // component along camera right
+  return (Math.atan2(right, fwd) * 180) / Math.PI;
+}
+
 export class Hud {
   private root: HTMLDivElement;
   private healthFill: HTMLDivElement;
@@ -44,6 +64,8 @@ export class Hud {
   private hintEl!: HTMLDivElement;
   private damageVignette!: HTMLDivElement;
   private dmgTimer: ReturnType<typeof setTimeout> | undefined;
+  private damageArc!: HTMLDivElement;
+  private dirTimer: ReturnType<typeof setTimeout> | undefined;
   private ammoEl: HTMLDivElement;
   private weaponEl: HTMLDivElement;
   private grenadeEl: HTMLDivElement;
@@ -154,6 +176,22 @@ export class Hud {
       "box-shadow:inset 0 0 140px 42px rgba(170,0,0,.85);z-index:23;";
     root.appendChild(vign);
     this.damageVignette = vign;
+
+    // Damage-direction indicator: a full-screen container rotated about its center so its
+    // red edge-arc (pinned to the top) points toward whoever last hit the local player.
+    // 0° = ahead, 180° = behind, ±90° = right/left (see flashDamageDirection / damageDirectionAngle).
+    const dir = document.createElement("div");
+    dir.style.cssText =
+      "position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .5s;z-index:24;";
+    const arc = document.createElement("div");
+    arc.style.cssText =
+      "position:absolute;left:50%;top:0;width:340px;height:96px;margin-left:-170px;" +
+      "border-radius:0 0 50% 50%;" +
+      "background:radial-gradient(ellipse 60% 100% at 50% 0%," +
+      "rgba(255,40,40,.9) 0%,rgba(255,40,40,.45) 45%,rgba(255,40,40,0) 75%);";
+    dir.appendChild(arc);
+    root.appendChild(dir);
+    this.damageArc = dir;
 
     // Ammo counter (bottom-right): "clip / reserve" or "RELOADING…".
     const ammo = document.createElement("div");
@@ -341,6 +379,18 @@ export class Hud {
     this.dmgTimer = setTimeout(() => { this.damageVignette.style.opacity = "0"; }, 130);
   }
 
+  /**
+   * Point the damage-direction arc at `angleDeg` (screen-relative bearing from
+   * damageDirectionAngle: 0 = ahead, 180 = behind, ±90 = right/left) and fade it
+   * out over ~500ms. Call when the local player takes a hit from a known attacker.
+   */
+  flashDamageDirection(angleDeg: number): void {
+    this.damageArc.style.transform = `rotate(${angleDeg}deg)`; // instant (only opacity transitions)
+    this.damageArc.style.opacity = "1";
+    if (this.dirTimer !== undefined) clearTimeout(this.dirTimer);
+    this.dirTimer = setTimeout(() => { this.damageArc.style.opacity = "0"; }, 500);
+  }
+
   /** Update the health bar from the local player's hp (0..MAX_HP). */
   setHealth(hp: number): void {
     const clamped = Math.max(0, Math.min(MAX_HP, hp));
@@ -480,6 +530,7 @@ export class Hud {
     if (this.hitMarkerTimer !== undefined) clearTimeout(this.hitMarkerTimer);
     if (this.rocketBannerTimer !== undefined) clearTimeout(this.rocketBannerTimer);
     if (this.dmgTimer !== undefined) clearTimeout(this.dmgTimer);
+    if (this.dirTimer !== undefined) clearTimeout(this.dirTimer);
     this.root.remove();
     this.resultsEl.remove();
   }

@@ -1,10 +1,10 @@
 // worker/protocol.ts — shared wire protocol + tunables. No runtime deps.
 
-export const SERVER_TICK_HZ = 20;
-export const SERVER_TICK_MS = 1000 / SERVER_TICK_HZ;      // 50
-export const CLIENT_SEND_HZ = 15;
-export const CLIENT_SEND_MS = 1000 / CLIENT_SEND_HZ;      // ~66.67
-export const INTERP_DELAY_MS = 120;
+export const SERVER_TICK_HZ = 64;
+export const SERVER_TICK_MS = 1000 / SERVER_TICK_HZ;      // ~15.6
+export const CLIENT_SEND_HZ = 60;
+export const CLIENT_SEND_MS = 1000 / CLIENT_SEND_HZ;      // ~16.67
+export const INTERP_DELAY_MS = 45;                        // ~2x tick interval + jitter margin (was 120 @ 20Hz on Cloudflare)
 export const MAX_PLAYERS_PER_ROOM = 12;
 export const IDLE_TIMEOUT_MS = 30_000;
 export const MAX_MESSAGE_BYTES = 1024;                    // app-level cap (platform max is 32 MiB)
