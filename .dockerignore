@@ -1,0 +1,14 @@
+# Build context trim for the Docker image. node_modules + dist are rebuilt inside the image;
+# tests/docs/CF artifacts aren't needed to build the Node target.
+node_modules
+dist
+.wrangler
+.git
+.github
+docs
+test
+**/*.test.ts
+worker-configuration.d.ts
+*.log
+.DS_Store
+npm-debug.log*

@@ -133,6 +133,14 @@ export const SPRING_PICKUPS: readonly Vec3[] = [
 export type Vec3 = [number, number, number];
 export type Rot = [number, number];                       // [yaw, pitch] in radians
 
+// Transport-agnostic socket seam. Both the Cloudflare Hibernation `WebSocket` and the Node
+// `ws` library's socket satisfy this structurally, so the game core (GameRoomCore) runs
+// unchanged on both runtimes. Keep it minimal — only what the server actually calls.
+export interface Conn {
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+}
+
 export interface Weapon {
   id: number; name: string; damage: number; headMult: number; maxRange: number; cooldownMs: number;
   clipSize: number; reserveAmmo: number; reloadMs: number;

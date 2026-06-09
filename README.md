@@ -165,6 +165,41 @@ Run `npm run dev`, open **http://localhost:5173 in 3 tabs**, give each a differe
    row highlighted; release to hide.
 7. Close a tab: the other tabs remove that player's mesh, nameplate, and scoreboard row.
 
+## Self-host on a dedicated server (Dokploy)
+
+The same repo also runs as a plain **Node.js** process on any Docker host (e.g.
+[Dokploy](https://dokploy.com)), without Cloudflare. The game logic is shared verbatim between
+both targets (`worker/game-core.ts`); only the transport differs — the Node host
+(`server/index.ts`) uses `@hono/node-server` + `ws` instead of the Durable Object. The Cloudflare
+deploy above keeps working unchanged.
+
+**Run the Node target locally:**
+
+```sh
+npm run build:node                  # build:client (-> dist/client) + build:server (-> dist/server)
+PORT=8080 npm start                 # node dist/server/index.js   (PowerShell: $env:PORT=8080; npm start)
+curl http://localhost:8080/api/health   # -> {"ok":true}
+```
+
+Then open **http://localhost:8080 in 2–3 tabs** and run the manual checklist below — same play as
+local Vite, just served by Node.
+
+**Container:** the multi-stage `Dockerfile` builds the client and bundles the server into a slim
+`node:22` image (port `8080`, healthcheck `/api/health`, no volume — room state is in-memory and
+ephemeral, exactly like the DO). A GitHub Actions workflow
+(`.github/workflows/docker-image.yml`) builds and pushes it to **GHCR** on every push to `master`.
+
+**Deploy on Dokploy:**
+
+1. Create Project → **Application** → Provider **Docker (image)**.
+2. Image `ghcr.io/<owner>/<repo>:latest` (add a registry credential if the package is private).
+3. Env: `PORT=8080`.
+4. Domains: add your domain → container port **8080** → enable HTTPS/Let's Encrypt (Traefik
+   proxies the WebSocket upgrade automatically — it shares the origin/port).
+5. **Replicas = 1** — rooms live in one process's memory; multiple replicas would split a room's
+   players across processes. (Scaling out later needs sticky-by-room routing.)
+6. Health check path `/api/health`. No persistent volume.
+
 ## License
 
 MIT (or your choice).
