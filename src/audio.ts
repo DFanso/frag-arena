@@ -10,7 +10,13 @@ const SAMPLE_URLS: Record<string, string> = {
   explosion: "/sfx/flutie8211-bomb-and-echo-2-540400.mp3",
   mortar: "/sfx/freesound_community-grenade-launcher-106342.mp3",
   outro: "/sfx/outro.mp3",
+  hit: "/sfx/hit.mp3",
 };
+
+// Leading-edge debounce for the hit confirm: the first hit of a streak plays, and further hits
+// are suppressed until there's a quiet gap of at least this long — so rapid hits don't machine-gun
+// the sound. Every hit extends the window, so a sustained burst only ever plays the first.
+const HIT_DEBOUNCE_MS = 1500;
 
 export class Sfx {
   private ctx: AudioContext | undefined;
@@ -19,6 +25,7 @@ export class Sfx {
   private samples: Partial<Record<string, AudioBuffer>> = {}; // decoded SFX, keyed by SAMPLE_URLS name
   private samplesLoading = false;
   private musicSrc: AudioBufferSourceNode | undefined; // the one playing music track (outro), so it can be stopped
+  private lastHitAt = -Infinity; // performance.now() of the last hit() call (drives the hit debounce)
 
   /**
    * Create (or resume) the AudioContext. MUST be called from a user gesture handler
@@ -110,7 +117,12 @@ export class Sfx {
   }
 
   hit(): void {
-    this.blip("triangle", 880, 660, 0.22, 0.06);
+    // Leading-edge debounce: only the first hit of a streak plays; later hits extend the window.
+    const now = performance.now();
+    const play = now - this.lastHitAt >= HIT_DEBOUNCE_MS;
+    this.lastHitAt = now;
+    if (!play) return;
+    if (!this.playSample("hit")) this.blip("triangle", 880, 660, 0.22, 0.06); // sample, else synth fallback
   }
 
   death(): void {
