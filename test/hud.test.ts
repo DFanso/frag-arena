@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sortScoreboard, pruneKillFeed, damageDirectionAngle, KILL_FEED_TTL_MS, type KillFeedEntry } from "../src/hud";
+import { sortScoreboard, pruneKillFeed, damageDirectionAngle, minimapPoint, KILL_FEED_TTL_MS, type KillFeedEntry, type MinimapView } from "../src/hud";
 import type { PlayerSnap } from "../worker/protocol";
 
 function snap(id: number, name: string, frags: number, deaths: number): PlayerSnap {
@@ -68,6 +68,57 @@ describe("damageDirectionAngle", () => {
 
   it("is relative to the player position, not the world origin", () => {
     close(damageDirectionAngle([5, 0, 5], [5, 0, -5], 0), 0); // attacker due -Z of the player
+  });
+});
+
+describe("minimapPoint", () => {
+  // 160px canvas, arena half = 120 → scale = (160/2)/120. Center = (80,80). +x right, +y down.
+  const north = (over: Partial<MinimapView> = {}): MinimapView =>
+    ({ mode: "north", self: [0, 0, 0], yaw: 0, half: 120, size: 160, ...over });
+  const rotate = (over: Partial<MinimapView> = {}): MinimapView =>
+    ({ mode: "rotate", self: [0, 0, 0], yaw: 0, half: 120, size: 160, ...over });
+  const near = (a: number, b: number) => expect(Math.abs(a - b)).toBeLessThan(1e-6);
+
+  it("north: arena center maps to canvas center, not clamped", () => {
+    const p = minimapPoint(0, 0, north());
+    near(p.x, 80); near(p.y, 80); expect(p.clamped).toBe(false);
+  });
+
+  it("north: +z (south) maps downward, +x maps right", () => {
+    const s = minimapPoint(60, 0, north()); near(s.x, 120); near(s.y, 80);
+    const d = minimapPoint(0, 60, north()); near(d.x, 80); near(d.y, 120);
+  });
+
+  it("north: ignores self position and yaw (map is fixed)", () => {
+    const p = minimapPoint(60, 0, north({ self: [40, 0, -40], yaw: 1.2 }));
+    near(p.x, 120); near(p.y, 80);
+  });
+
+  it("north: a point outside the arena clamps to the circular edge", () => {
+    const p = minimapPoint(1000, 0, north());
+    expect(p.clamped).toBe(true);
+    near(Math.hypot(p.x - 80, p.y - 80), 80); // on the edge circle (radius = size/2)
+    near(p.x, 160); near(p.y, 80);
+  });
+
+  it("rotate: a point straight ahead maps to up (above center)", () => {
+    const p = minimapPoint(0, -60, rotate()); // yaw=0 faces -Z, so -Z is ahead
+    near(p.x, 80); near(p.y, 40);
+  });
+
+  it("rotate: a point to the right maps to the right", () => {
+    const p = minimapPoint(60, 0, rotate());
+    near(p.x, 120); near(p.y, 80);
+  });
+
+  it("rotate: is relative to the player position", () => {
+    const p = minimapPoint(30, -30, rotate({ self: [30, 0, 30] })); // 60u ahead of the player
+    near(p.x, 80); near(p.y, 40);
+  });
+
+  it("rotate: accounts for yaw (turned to face -X)", () => {
+    const p = minimapPoint(-60, 0, rotate({ yaw: Math.PI / 2 })); // -X is now ahead
+    near(p.x, 80); near(p.y, 40);
   });
 });
 

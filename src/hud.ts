@@ -1,5 +1,5 @@
 // src/hud.ts — HUD overlay: crosshair, health bar, prompt, scoreboard, kill feed, hit marker.
-import { MAX_HP, MAX_ARMOR, SPRING_DURATION_MS } from "../worker/protocol";
+import { MAX_HP, MAX_ARMOR, SPRING_DURATION_MS, ST_DEAD } from "../worker/protocol";
 import type { PlayerSnap, KillMsg, Standing, Vec3 } from "../worker/protocol";
 import { countdownText, deathMessage } from "./death-ui";
 import { formatClock } from "./match-ui";
@@ -52,6 +52,52 @@ export function damageDirectionAngle(self: Vec3, attacker: Vec3, yaw: number): n
   return (Math.atan2(right, fwd) * 180) / Math.PI;
 }
 
+export type MinimapMode = "north" | "rotate";
+export interface MinimapView {
+  mode: MinimapMode; // "north" = arena fixed (player dot moves); "rotate" = player-centred, forward up
+  self: Vec3;        // local player world position (used in rotate mode + as the dot origin)
+  yaw: number;       // camera yaw (radians) — forward maps to "up" in rotate mode
+  half: number;      // arena half-extent in world units (ARENA_HALF)
+  size: number;      // minimap canvas size in pixels
+}
+
+/**
+ * Pure: map a world (x,z) point to minimap canvas pixels (origin top-left, +x right, +y down).
+ * Scale maps the arena half-extent onto half the canvas. Points beyond the canvas radius are
+ * clamped onto the circular edge (`clamped=true`) so off-map players still show a bearing.
+ *
+ * - north  : fixed orientation about the arena origin (0,0); ignores self/yaw.
+ * - rotate : centred on the player with their facing pointing up; enemies orbit as you turn.
+ */
+export function minimapPoint(wx: number, wz: number, view: MinimapView): { x: number; y: number; clamped: boolean } {
+  const center = view.size / 2;
+  const scale = center / view.half;
+  let ox: number;
+  let oy: number;
+  if (view.mode === "north") {
+    ox = wx * scale;
+    oy = wz * scale;
+  } else {
+    const dx = wx - view.self[0];
+    const dz = wz - view.self[2];
+    const sin = Math.sin(view.yaw);
+    const cos = Math.cos(view.yaw);
+    const right = dx * cos - dz * sin;   // camera-right component
+    const fwd = -dx * sin - dz * cos;    // camera-forward component
+    ox = right * scale;
+    oy = -fwd * scale;                   // forward → up (negative y)
+  }
+  const r = Math.hypot(ox, oy);
+  let clamped = false;
+  if (r > center && r > 0) {
+    const f = center / r;
+    ox *= f;
+    oy *= f;
+    clamped = true;
+  }
+  return { x: center + ox, y: center + oy, clamped };
+}
+
 export class Hud {
   private root: HTMLDivElement;
   private healthFill: HTMLDivElement;
@@ -86,6 +132,11 @@ export class Hud {
   private deathCount!: HTMLDivElement;
   private matchTimerEl!: HTMLDivElement;
   private resultsEl!: HTMLDivElement;
+  private minimapWrap!: HTMLDivElement;
+  private minimapCanvas!: HTMLCanvasElement;
+  private minimapCtx!: CanvasRenderingContext2D | null;
+  private minimapVisible = true;
+  private minimapMode: MinimapMode = "north";
 
   constructor(parent: HTMLElement = document.body) {
     const root = document.createElement("div");
@@ -244,7 +295,7 @@ export class Hud {
     prompt.style.cssText =
       "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
       "background:rgba(0,0,0,.55);color:#fff;font-size:24px;text-align:center;";
-    prompt.textContent = "Click to play  ·  WASD move · Shift sprint · Ctrl/C crouch · Space jump · Hold to fire · Right-click aim · R reload · Wheel/1·2·3 weapon · G grenade · E parachute · F zipline · Grab the rocket launcher atop the tower · Tab scores";
+    prompt.textContent = "Click to play  ·  WASD move · Shift sprint · Ctrl/C crouch · Space jump · Hold to fire · Right-click aim · R reload · Wheel/1·2·3 weapon · G grenade · E parachute · F zipline · M map · N map-mode · Grab the rocket launcher atop the tower · Tab scores";
     root.appendChild(prompt);
     this.prompt = prompt;
 
@@ -285,6 +336,23 @@ export class Hud {
       "color:#fff;font:700 26px monospace;text-shadow:0 2px 4px #000;" +
       "background:rgba(0,0,0,.4);padding:2px 14px;border-radius:4px;";
     root.appendChild(this.matchTimerEl);
+
+    // Minimap / radar (top-left; bottom-right is taken by the ammo/weapon stack). Round frame
+    // with a circular canvas inside. M toggles it, N flips north-up ↔ player-centred (see onKeyDown).
+    const MM = 168;
+    const mmWrap = document.createElement("div");
+    mmWrap.style.cssText =
+      `position:absolute;left:18px;top:18px;width:${MM}px;height:${MM}px;border-radius:50%;` +
+      "background:rgba(8,12,20,.55);border:2px solid rgba(255,255,255,.25);box-shadow:0 2px 10px rgba(0,0,0,.5);";
+    const mmCanvas = document.createElement("canvas");
+    mmCanvas.width = MM;
+    mmCanvas.height = MM;
+    mmCanvas.style.cssText = "width:100%;height:100%;display:block;border-radius:50%;";
+    mmWrap.appendChild(mmCanvas);
+    root.appendChild(mmWrap);
+    this.minimapWrap = mmWrap;
+    this.minimapCanvas = mmCanvas;
+    this.minimapCtx = mmCanvas.getContext("2d");
 
     // End-of-match results overlay (hidden until matchover). Interactive (Continue).
     // Body-level (NOT inside the z-index:10 HUD root) so it can sit ABOVE the lobby overlay.
@@ -389,6 +457,86 @@ export class Hud {
     this.damageArc.style.opacity = "1";
     if (this.dirTimer !== undefined) clearTimeout(this.dirTimer);
     this.dirTimer = setTimeout(() => { this.damageArc.style.opacity = "0"; }, 500);
+  }
+
+  /**
+   * Draw the minimap each frame. Buildings + arena half-extent come from the caller (src/map.ts)
+   * so the HUD stays decoupled from the scene. Local player = white dot + facing arrow; enemies
+   * = their player colour; dead players are omitted. Off-map dots clamp to the radar edge.
+   */
+  updateMinimap(
+    players: PlayerSnap[],
+    myId: number,
+    self: Vec3,
+    yaw: number,
+    buildings: ReadonlyArray<{ x: number; z: number; w: number; d: number }>,
+    half: number,
+  ): void {
+    const ctx = this.minimapCtx;
+    if (!this.minimapVisible) { this.minimapWrap.style.display = "none"; return; }
+    this.minimapWrap.style.display = "block";
+    if (!ctx) return;
+
+    const size = this.minimapCanvas.width;
+    const c = size / 2;
+    const view: MinimapView = { mode: this.minimapMode, self, yaw, half, size };
+
+    ctx.clearRect(0, 0, size, size);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(c, c, c - 1, 0, Math.PI * 2);
+    ctx.clip(); // keep everything inside the round frame
+
+    // Building footprints (transform all four corners → robust for both north and rotate modes).
+    ctx.fillStyle = "rgba(150,160,175,.5)";
+    ctx.strokeStyle = "rgba(200,210,225,.7)";
+    ctx.lineWidth = 1;
+    for (const b of buildings) {
+      const hw = b.w / 2;
+      const hd = b.d / 2;
+      const corners = [
+        minimapPoint(b.x - hw, b.z - hd, view),
+        minimapPoint(b.x + hw, b.z - hd, view),
+        minimapPoint(b.x + hw, b.z + hd, view),
+        minimapPoint(b.x - hw, b.z + hd, view),
+      ];
+      ctx.beginPath();
+      ctx.moveTo(corners[0]!.x, corners[0]!.y);
+      for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i]!.x, corners[i]!.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Enemy dots (skip the local player and the dead).
+    for (const p of players) {
+      if (p.id === myId || p.st === ST_DEAD) continue;
+      const pt = minimapPoint(p.p[0], p.p[2], view);
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, pt.clamped ? 2.5 : 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = "#" + (playerColor(p.id) & 0xffffff).toString(16).padStart(6, "0");
+      ctx.fill();
+    }
+
+    // Local player: dot + facing arrow. The arrow vector is the screen delta from the player to a
+    // point 8u ahead, so it stays correct in both modes (points up in rotate mode).
+    const me = minimapPoint(self[0], self[2], view);
+    const ahead = minimapPoint(self[0] - Math.sin(yaw) * 8, self[2] - Math.cos(yaw) * 8, view);
+    let ax = ahead.x - me.x;
+    let ay = ahead.y - me.y;
+    const al = Math.hypot(ax, ay) || 1;
+    ax /= al; ay /= al;
+    const px = -ay; // perpendicular for the arrow base
+    const py = ax;
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.moveTo(me.x + ax * 7, me.y + ay * 7);          // tip
+    ctx.lineTo(me.x - ax * 4 + px * 4, me.y - ay * 4 + py * 4);
+    ctx.lineTo(me.x - ax * 4 - px * 4, me.y - ay * 4 - py * 4);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
   }
 
   /** Update the health bar from the local player's hp (0..MAX_HP). */
@@ -536,6 +684,14 @@ export class Hud {
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.code === "KeyM") {                 // toggle minimap visibility
+      this.minimapVisible = !this.minimapVisible;
+      return;
+    }
+    if (e.code === "KeyN") {                  // toggle minimap orientation mode
+      this.minimapMode = this.minimapMode === "north" ? "rotate" : "north";
+      return;
+    }
     if (e.code !== "Tab") return;
     e.preventDefault();
     if (!this.scoreboardVisible) {
