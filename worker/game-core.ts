@@ -79,6 +79,7 @@ import {
   ROCKET_MAX_RANGE,
   ROCKET_TOWERS,
   CHAT_MIN_INTERVAL_MS,
+  POSITION_BUFFER_MS,
   decode,
   encode,
   sanitizeName,
@@ -121,7 +122,8 @@ import type {
   BoughtMsg,
   Weapon,
 } from "./protocol";
-import { validateShoot, chooseSpawn, isHeadshot } from "./validate";
+import { validateShoot, chooseSpawn, isHeadshot, rewindTargetTime, posAtTime } from "./validate";
+import type { PosSample } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
 
 interface PlayerRec {
@@ -158,6 +160,7 @@ interface PlayerRec {
   armor: number;         // armor points (soak damage before hp; 0..MAX_ARMOR)
   c: boolean;            // crouching
   pc: boolean;           // parachute deployed (echoed for remote rendering)
+  posHistory: PosSample[]; // lag-comp (issue #13): recent {ts,p} positions, oldest→newest, ~POSITION_BUFFER_MS deep
 }
 
 // A pending area-of-effect blast (grenade or rocket) awaiting detonation.
@@ -298,6 +301,7 @@ export class GameRoomCore {
     rec.armor = 0;                                    // armor is lost on death (grab a pickup again)
     rec.c = false;
     rec.pc = false;
+    rec.posHistory = [{ ts: now, p: [rec.p[0], rec.p[1], rec.p[2]] }]; // reset lag-comp history at the spawn point
     const msg: SpawnMsg = { t: "spawn", id: rec.id, p: rec.p, prot: SPAWN_PROTECTION_MS };
     this.broadcast(msg);
   }
@@ -346,6 +350,7 @@ export class GameRoomCore {
       armor: 0,
       c: false,
       pc: false,
+      posHistory: [],
     };
 
     // Welcome carries the snapshots of players already IN THE MATCH (so a late joiner can
@@ -507,6 +512,13 @@ export class GameRoomCore {
     rec.lastInputAt = now;
     rec.lastSeq = m.seq;
 
+    // Lag compensation (issue #13): record the accepted position with the TRUSTED server time so
+    // handleShoot can rewind a target to where it actually was at the shooter's perceived fire
+    // moment. Drop entries older than POSITION_BUFFER_MS so the ring-buffer stays bounded.
+    rec.posHistory.push({ ts: now, p: [rec.p[0], rec.p[1], rec.p[2]] });
+    const cutoff = now - POSITION_BUFFER_MS;
+    while (rec.posHistory.length > 0 && rec.posHistory[0]!.ts < cutoff) rec.posHistory.shift();
+
     // Out-of-bounds kill floor (issue #23): falling below the world is an instant suicide (no
     // frag credit), so it can't be used to silently escape a fight. The normal death + respawn
     // flow then repositions the player. Authoritative here — the client only stops the fall; it
@@ -542,11 +554,19 @@ export class GameRoomCore {
       rec.protectedUntil = 0;
     }
 
-    // Combat validates against CURRENT server-authoritative positions (no lag-comp
-    // rewind in v1, per contract D4).
+    // Lag compensation (issue #13): rewind the target to where it was at the shooter's perceived
+    // fire moment instead of its current position, so shots that looked on-target on-screen (one
+    // RTT + the interpolation delay ago) are accepted. The rewind is clamped to
+    // LAGCOMP_MAX_REWIND_MS, and falls back to the current position when there is no history
+    // (a target that never moved this match) — neither path widens the anti-cheat envelope.
+    const targetPos = target === null
+      ? null
+      : posAtTime(target.posHistory, rewindTargetTime(now, m.ts)) ?? target.p;
+
+    // Combat validates against the rewound target position (current positions for the shooter).
     const reject = validateShoot(
       { p: rec.p, st: rec.st, lastShotAt: rec.lastShotAt },
-      target === null ? null : { p: target.p, st: target.st },
+      target === null ? null : { p: targetPos!, st: target.st },
       m.d,
       weapon,
       now,
@@ -569,8 +589,10 @@ export class GameRoomCore {
     if (reject !== null || target === null) return;
 
     // Headshot is server-verified (issue #17): honor the client's `head` claim only when the
-    // aim ray actually crosses the target's head zone. A body/leg shot can no longer claim 2x.
-    const head = m.head && isHeadshot(rec.p, target.p, m.d, target.c);
+    // aim ray actually crosses the target's head zone. Uses the SAME rewound position as the
+    // hit validation (issue #13) so the head zone is where the shooter saw it. A body/leg shot
+    // can no longer claim 2x.
+    const head = m.head && isHeadshot(rec.p, targetPos!, m.d, target.c);
     const dmg = head ? weapon.damage * weapon.headMult : weapon.damage;
     this.applyDamage(target, dmg, rec, head);
   }
