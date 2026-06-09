@@ -334,6 +334,15 @@ async function main(): Promise<void> {
     sfx.hit();
   });
 
+  // Footsteps (#21): the stride timer fires this while the local player is grounded + moving.
+  controls.onStep(() => sfx.footstep());
+
+  // Suspend audio when the tab is backgrounded so no SFX plays out of view (resume on return).
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) sfx.suspend();
+    else sfx.resume();
+  });
+
   // First-person viewmodel: weapon + procedural arms gripping it.
   const viewmodel = new Viewmodel(camera, reg.gun);
 
@@ -406,6 +415,19 @@ async function main(): Promise<void> {
       remotes.set(ps.id, rp);
     }
     return rp;
+  }
+
+  // Play a remote player's shoot cue: the muzzle animation plus a positional gunfire blip at the
+  // shooter's world position (#21), so enemy fire is louder/closer-panned when nearby. The local
+  // player's own shot SFX is handled non-positionally by WeaponController, so skip self.
+  function playRemoteShoot(byId: number): void {
+    const rp = remotes.get(byId);
+    if (rp === undefined) return;
+    rp.playShoot();
+    if (byId !== myId) {
+      const p = rp.group.position;
+      sfx.positionalShot([p.x, p.y + EYE_HEIGHT, p.z]); // back to eye height (group origin is feet)
+    }
   }
 
   // ---- networking (name travels in the WS URL query — D5) -------------------
@@ -511,8 +533,8 @@ async function main(): Promise<void> {
       const p = victim.group.position;
       blood.spray([p.x, p.y + 1.1, p.z], m.head ? 1.5 : 1);
     }
-    // Trigger shoot cue on the remote who fired.
-    remotes.get(m.by)?.playShoot();
+    // Trigger shoot cue on the remote who fired (animation + positional gunfire SFX).
+    playRemoteShoot(m.by);
   });
 
   net.on("kill", (m: KillMsg) => {
@@ -532,8 +554,8 @@ async function main(): Promise<void> {
     }
     // The victim vanishes immediately (don't wait for the next snapshot).
     remotes.get(m.on)?.setAlive(false);
-    // Trigger shoot cue on the remote who got the kill.
-    remotes.get(m.by)?.playShoot();
+    // Trigger shoot cue on the remote who got the kill (animation + positional gunfire SFX).
+    playRemoteShoot(m.by);
   });
 
   net.on("spawn", (m: SpawnMsg) => {
@@ -654,13 +676,16 @@ async function main(): Promise<void> {
     onLocalShoot: (hit, weaponId) => {
       // sniper (id 1) → its fire+reload clip; rocket launcher / "mortar" (id 2) → launcher thump; else machine-gun.
       sfx.shoot(weaponId === 1 ? "sniper" : weaponId === 2 ? "mortar" : "shoot");
-      viewmodel.recoil();
+      viewmodel.recoil(1 + (shootHandle?.getSpread() ?? 0) * 6); // kick scales with bloom (#20)
       viewmodel.flash();
       if (hit) hud.flashHitMarker();
     },
     onAmmo: (clip, reserve, reloading) => hud.setAmmo(clip, reserve, reloading),
     onWeapon: (name, id) => { hud.setWeapon(name); viewmodel.setWeapon(id); },
     onScope: (active) => hud.setScope(active),
+    // Lower look sensitivity while zoomed (#28) so the on-screen aim speed stays consistent;
+    // scale off the persisted base (the settings slider writes settings.sensitivity directly).
+    onZoomSensitivity: (scale) => controls.setSensitivity(settings.sensitivity * scale),
     onRocket: (has) => hud.setRocket(has),
     sfx: { shoot: () => sfx.shoot(), reload: (ms) => sfx.reload(ms), dryFire: () => sfx.dryFire() },
   });
@@ -710,6 +735,7 @@ async function main(): Promise<void> {
 
   let lastFrame = performance.now();
   let sendAccum = 0;
+  const listenerFwd = new THREE.Vector3(); // scratch: camera look direction for the audio listener
 
   function sendInputIfDue(accum: number, dtMs: number): number {
     const a = accum + dtMs;
@@ -738,6 +764,14 @@ async function main(): Promise<void> {
 
     // Local predicted movement.
     controls.update(dt);
+
+    // Keep the audio listener on the camera so positional gunfire (#21) attenuates + pans
+    // relative to the local player's position and facing.
+    camera.getWorldDirection(listenerFwd);
+    sfx.setListenerPosition(
+      [camera.position.x, camera.position.y, camera.position.z],
+      [listenerFwd.x, listenerFwd.y, listenerFwd.z],
+    );
 
     // Send InMsg at CLIENT_SEND_MS cadence (NOT per frame) — exactly one cadence line.
     sendAccum = sendInputIfDue(sendAccum, dtMs);
@@ -769,7 +803,8 @@ async function main(): Promise<void> {
     );
 
     // Auto-fire (hold-to-shoot for full-auto weapons) + viewmodel recoil/flash ease.
-    shootHandle?.update();
+    shootHandle?.update(dtMs);
+    hud.setCrosshairSpread(shootHandle?.getSpread() ?? 0); // bloom widens the crosshair gap (#20)
     viewmodel.update(dtMs);
 
     // Death countdown HUD update.

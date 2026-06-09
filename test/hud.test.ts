@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sortScoreboard, pruneKillFeed, damageDirectionAngle, minimapPoint, pingColor, pushPingSample, averagePing, PING_SAMPLES, KILL_FEED_TTL_MS, type KillFeedEntry, type MinimapView } from "../src/hud";
+import { sortScoreboard, pruneKillFeed, damageDirectionAngle, minimapPoint, pingColor, pushPingSample, averagePing, crosshairGapPx, PING_SAMPLES, KILL_FEED_TTL_MS, type KillFeedEntry, type MinimapView } from "../src/hud";
 import type { PlayerSnap } from "../worker/protocol";
 
 function snap(id: number, name: string, frags: number, deaths: number): PlayerSnap {
@@ -188,5 +188,18 @@ describe("ping rolling buffer (issue #18)", () => {
   it("averagePing rounds the mean", () => {
     expect(averagePing([10, 20, 30])).toBe(20);
     expect(averagePing([10, 11])).toBe(11); // 10.5 -> 11
+  });
+});
+
+describe("crosshairGapPx (aim-spread crosshair, issue #20)", () => {
+  it("returns the base gap at zero spread", () => {
+    expect(crosshairGapPx(0)).toBe(3);
+  });
+  it("widens monotonically with spread", () => {
+    expect(crosshairGapPx(0.02)).toBeGreaterThan(crosshairGapPx(0.006));
+    expect(crosshairGapPx(0.05)).toBeGreaterThan(crosshairGapPx(0.02));
+  });
+  it("clamps negative spread to the base gap", () => {
+    expect(crosshairGapPx(-1)).toBe(3);
   });
 });

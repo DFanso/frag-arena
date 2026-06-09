@@ -3,7 +3,8 @@
 // Ammo is client-predicted for instant HUD feedback; the server enforces it authoritatively.
 import * as THREE from "three";
 import { WEAPONS, GRENADE_COOLDOWN_MS, ROCKET_ID, ROCKET_CLIP, type ShootMsg, type ReloadMsg, type ThrowMsg, type RocketMsg } from "../worker/protocol";
-import { fireRay, fireRocket } from "./combat";
+import { fireRay, fireRocket, bumpSpread, decaySpread } from "./combat";
+import { clampZoomLevel, zoomMultiplier, zoomSensitivityScale, isScopeActive } from "./zoom";
 
 export interface WeaponDeps {
   camera: THREE.PerspectiveCamera;
@@ -18,6 +19,9 @@ export interface WeaponDeps {
   onAmmo: (clip: number, reserve: number, reloading: boolean) => void;
   onWeapon: (name: string, id: number) => void;
   onScope: (active: boolean) => void;
+  // Look-sensitivity scale for the active zoom level (#28): 1 at hipfire, < 1 while zoomed so the
+  // on-screen aim speed stays roughly constant. main multiplies the persisted base sensitivity by it.
+  onZoomSensitivity: (scale: number) => void;
   onRocket: (has: boolean) => void;        // rocket launcher gained / lost (HUD pickup banner)
   sfx: { shoot(sample?: string): void; reload(durationMs: number): void; dryFire(): void };
 }
@@ -28,7 +32,11 @@ export class WeaponController {
   private reserve: number[] = WEAPONS.map((w) => w.reserveAmmo);
   private reloading: boolean[] = WEAPONS.map(() => false);
   private timers: Array<ReturnType<typeof setTimeout> | undefined> = WEAPONS.map(() => undefined);
-  private ads = false;
+  // Per-weapon zoom (#28): the active zoom-level index into the current weapon's `zoomLevels`
+  // (0 = hipfire). Right-click holds the zoom in; while held the wheel cycles deeper levels.
+  private zoomIdx = 0;
+  private rmbHeld = false; // right mouse button down (hold-to-zoom)
+  private currentSpread = WEAPONS[0]!.baseSpread; // aim-spread/bloom (#20); decays toward baseSpread
   private lastThrow = 0;
   private firing = false;   // left mouse button held
   private lastFireAt = 0;   // performance.now() of the last shot (client fire-rate gate)
@@ -46,11 +54,11 @@ export class WeaponController {
     this.onMouseDown = (e) => {
       if (!d.isLocked()) return;
       if (e.button === 0) { this.firing = true; this.fire(); }
-      else if (e.button === 2) this.setADS(true);
+      else if (e.button === 2) { this.rmbHeld = true; this.setZoom(1); } // hold-to-zoom: engage level 1
     };
     this.onMouseUp = (e) => {
       if (e.button === 0) this.firing = false;
-      else if (e.button === 2) this.setADS(false);
+      else if (e.button === 2) { this.rmbHeld = false; this.setZoom(0); } // release → hipfire
     };
     this.onKeyDown = (e) => {
       if (!d.isLocked()) return;
@@ -60,10 +68,15 @@ export class WeaponController {
       else if (e.code === "Digit3") this.switchTo(ROCKET_ID); // ignored unless holding the launcher
       else if (e.code === "KeyG") this.throwGrenade();
     };
-    // Mouse wheel cycles through the weapons you currently hold (rocket joins only when held).
-    this.onWheel = (e) => { if (d.isLocked()) this.cycle(e.deltaY > 0 ? 1 : -1); };
+    // Mouse wheel cycles weapons normally, but while zoomed in (right-click held) it steps through
+    // the current weapon's zoom levels instead (#28) — so a scoped sniper can dial deeper zoom.
+    this.onWheel = (e) => {
+      if (!d.isLocked()) return;
+      if (this.rmbHeld) this.cycleZoom(e.deltaY > 0 ? -1 : 1); // up = zoom in, down = zoom out
+      else this.cycle(e.deltaY > 0 ? 1 : -1);
+    };
     this.onCtx = (e) => e.preventDefault();
-    this.onLock = () => { if (!d.isLocked()) { this.setADS(false); this.firing = false; } };
+    this.onLock = () => { if (!d.isLocked()) { this.rmbHeld = false; this.setZoom(0); this.firing = false; } };
 
     this.clip[ROCKET_ID] = 0; // the rocket launcher starts un-held (no rockets until picked up)
 
@@ -127,8 +140,14 @@ export class WeaponController {
 
   // Auto-fire: keep firing while the trigger is held on a full-auto weapon (rate-limited
   // by the weapon's cooldown so the client stays in sync with the server). Called per frame.
-  update(): void {
+  update(dtMs = 0): void {
+    this.currentSpread = decaySpread(this.currentSpread, WEAPONS[this.cur]!.baseSpread, dtMs);
     if (this.firing && this.d.isLocked() && WEAPONS[this.cur]!.auto) this.fire();
+  }
+
+  /** Current aim-spread cone radius (NDC) — the HUD widens the crosshair gap from this (#20). */
+  getSpread(): number {
+    return this.currentSpread;
   }
 
   // Mark the local player dead/alive — gates firing + throwing so a corpse can't emit messages.
@@ -148,7 +167,10 @@ export class WeaponController {
     this.lastFireAt = now;
     this.clip[w]! -= 1;
     this.emit();
-    const res = fireRay(this.d.camera, this.d.getTargets());
+    const wp = WEAPONS[w]!;
+    const spread = this.zoomIdx > 0 ? this.currentSpread * 0.3 : this.currentSpread; // zoom tightens the cone
+    const res = fireRay(this.d.camera, this.d.getTargets(), spread);
+    this.currentSpread = bumpSpread(this.currentSpread, wp.baseSpread, wp.sprayGrowth); // bloom for the next shot
     this.d.send({ t: "shoot", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, w, hit: res.hit, head: res.head, barrel: res.barrel });
     this.d.onLocalShoot(res.hit !== null, w);
     if (this.clip[w]! <= 0) this.startReload(w);
@@ -172,22 +194,42 @@ export class WeaponController {
     }
   }
 
-  /** Set the base (hip) FOV from settings; ADS zoom still multiplies it. Applies immediately. */
+  /** Set the base (hip) FOV from settings; the active zoom level still multiplies it (#28). */
   setBaseFov(fov: number): void {
     this.d.baseFov = fov;
-    this.applyFov();
+    this.applyZoom();
   }
 
-  private applyFov(): void {
-    this.d.camera.fov = this.d.baseFov * (this.ads ? WEAPONS[this.cur]!.adsZoom : 1);
+  /** Current zoom-level index into the active weapon's zoomLevels (0 = hipfire). For tests/HUD. */
+  getZoom(): number {
+    return this.zoomIdx;
+  }
+
+  // Apply the active zoom level (#28): set the camera FOV from the weapon's multiplier, scale the
+  // look sensitivity to match, and drive the scope overlay. Idempotent — safe to call any time.
+  private applyZoom(): void {
+    const wp = WEAPONS[this.cur]!;
+    this.zoomIdx = clampZoomLevel(this.zoomIdx, wp.zoomLevels.length); // clamp after weapon switch
+    const m = zoomMultiplier(wp.zoomLevels, this.zoomIdx);
+    this.d.camera.fov = this.d.baseFov * m;
     this.d.camera.updateProjectionMatrix();
+    this.d.onZoomSensitivity(zoomSensitivityScale(m));
+    this.d.onScope(isScopeActive(wp.scoped, this.zoomIdx));
   }
 
-  private setADS(on: boolean): void {
-    if (this.ads === on) return;
-    this.ads = on;
-    this.applyFov();
-    this.d.onScope(on && WEAPONS[this.cur]!.scoped);
+  // Jump to an absolute zoom-level index (clamped to the weapon's levels), then apply it.
+  private setZoom(idx: number): void {
+    const next = clampZoomLevel(idx, WEAPONS[this.cur]!.zoomLevels.length);
+    if (next === this.zoomIdx) return;
+    this.zoomIdx = next;
+    this.applyZoom();
+  }
+
+  // Step the zoom level by `dir` while staying zoomed in (never below level 1 — releasing
+  // right-click is what returns to hipfire). No-op on weapons that have no deeper levels.
+  private cycleZoom(dir: number): void {
+    if (this.zoomIdx < 1) return; // only cycle while already zoomed (right-click held)
+    this.setZoom(Math.max(1, this.zoomIdx + dir));
   }
 
   private throwGrenade(): void {
@@ -204,8 +246,11 @@ export class WeaponController {
     if (id < 0 || id >= WEAPONS.length || id === this.cur) return;
     if (id === ROCKET_ID && !this.hasRocket) return; // can't select a launcher you don't hold
     this.cur = id;
-    this.applyFov();
-    this.d.onScope(this.ads && WEAPONS[id]!.scoped);
+    this.currentSpread = WEAPONS[id]!.baseSpread; // fresh weapon → reset bloom
+    // Carry the right-click hold across the switch: keep zoomed (level 1) on the new gun if the
+    // button is still down, else drop to hipfire. applyZoom re-clamps to the new weapon's levels.
+    this.zoomIdx = this.rmbHeld ? 1 : 0;
+    this.applyZoom();
     this.d.onWeapon(WEAPONS[id]!.name, id);
     this.emit();
   }
@@ -230,12 +275,13 @@ export class WeaponController {
     this.clip[ROCKET_ID] = 0; // un-held until the next tower pickup
     this.d.onRocket(false);
     this.cur = 0;
-    this.ads = false;
+    this.currentSpread = WEAPONS[0]!.baseSpread;
+    this.zoomIdx = 0;
+    this.rmbHeld = false;
     this.lastThrow = 0;
     this.firing = false;
     this.lastFireAt = 0;
-    this.applyFov();
-    this.d.onScope(false);
+    this.applyZoom(); // resets FOV, sensitivity scale, and the scope overlay to hipfire
     this.d.onWeapon(WEAPONS[0]!.name, 0);
     this.emit();
   }
@@ -248,7 +294,8 @@ export class WeaponController {
     this.d.dom.removeEventListener("contextmenu", this.onCtx);
     document.removeEventListener("pointerlockchange", this.onLock);
     for (const t of this.timers) if (t) clearTimeout(t);
-    this.ads = false;
-    this.applyFov();
+    this.zoomIdx = 0;
+    this.rmbHeld = false;
+    this.applyZoom();
   }
 }
