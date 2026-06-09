@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sortScoreboard, pruneKillFeed, damageDirectionAngle, minimapPoint, KILL_FEED_TTL_MS, type KillFeedEntry, type MinimapView } from "../src/hud";
+import { sortScoreboard, pruneKillFeed, damageDirectionAngle, minimapPoint, pingColor, pushPingSample, averagePing, PING_SAMPLES, KILL_FEED_TTL_MS, type KillFeedEntry, type MinimapView } from "../src/hud";
 import type { PlayerSnap } from "../worker/protocol";
 
 function snap(id: number, name: string, frags: number, deaths: number): PlayerSnap {
@@ -150,5 +150,43 @@ describe("pruneKillFeed", () => {
     const copy = input.slice();
     pruneKillFeed(input, 10_000);
     expect(input).toEqual(copy);
+  });
+});
+
+describe("pingColor (ping latency thresholds, issue #18)", () => {
+  it("green at or below 80ms", () => {
+    expect(pingColor(0)).toBe("#3c9");
+    expect(pingColor(80)).toBe("#3c9");
+  });
+  it("yellow above 80ms up to 150ms", () => {
+    expect(pingColor(81)).toBe("#fc6");
+    expect(pingColor(150)).toBe("#fc6");
+  });
+  it("red beyond 150ms", () => {
+    expect(pingColor(151)).toBe("#e44");
+    expect(pingColor(999)).toBe("#e44");
+  });
+});
+
+describe("ping rolling buffer (issue #18)", () => {
+  it("pushPingSample keeps the last PING_SAMPLES entries", () => {
+    let buf: number[] = [];
+    for (let i = 1; i <= PING_SAMPLES + 5; i++) buf = pushPingSample(buf, i);
+    expect(buf.length).toBe(PING_SAMPLES);
+    expect(buf[buf.length - 1]).toBe(PING_SAMPLES + 5); // newest retained
+    expect(buf[0]).toBe(6); // oldest 5 dropped (1..5)
+  });
+  it("pushPingSample does not mutate the input array", () => {
+    const buf = [1, 2, 3];
+    const out = pushPingSample(buf, 4);
+    expect(buf).toEqual([1, 2, 3]);
+    expect(out).toEqual([1, 2, 3, 4]);
+  });
+  it("averagePing returns 0 for an empty buffer", () => {
+    expect(averagePing([])).toBe(0);
+  });
+  it("averagePing rounds the mean", () => {
+    expect(averagePing([10, 20, 30])).toBe(20);
+    expect(averagePing([10, 11])).toBe(11); // 10.5 -> 11
   });
 });
