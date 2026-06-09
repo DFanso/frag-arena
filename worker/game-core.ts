@@ -25,6 +25,10 @@ import {
   RATE_LIMIT_MSGS_PER_SEC,
   MATCH_DURATION_MS,
   FRAG_LIMIT,
+  STARTING_CREDITS,
+  CREDITS_PER_HIT,
+  CREDITS_PER_KILL,
+  addCredits,
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
   MOVE_BUDGET_SEC,
@@ -126,6 +130,7 @@ interface PlayerRec {
   st: PlayerStateCode;
   frags: number;
   deaths: number;
+  credits: number;     // CS-style currency: earned on hits/kills, reset at match start (issue #25)
   lastShotAt: number;
   lastInputAt: number;
   respawnAt: number;
@@ -298,6 +303,7 @@ export class GameRoomCore {
       st: ST_ALIVE,
       frags: 0,
       deaths: 0,
+      credits: STARTING_CREDITS, // reset again at startMatch; seeded here so a lobby snap is sane
       lastShotAt: 0,
       lastInputAt: now,
       respawnAt: 0,
@@ -373,6 +379,7 @@ export class GameRoomCore {
     for (const rec of this.players.values()) {
       rec.frags = 0;
       rec.deaths = 0;
+      rec.credits = STARTING_CREDITS; // fresh economy each match (issue #25)
       rec.ready = false;
       rec.inMatch = true;
       rec.lastInputAt = now; // fresh idle window — they were in the lobby, not sending input
@@ -682,6 +689,11 @@ export class GameRoomCore {
     };
     this.broadcast(hit);
 
+    // Credits economy (issue #25): reward the shooter for landing a confirmed hit. Self-inflicted
+    // damage (own grenade / fall / kill floor — killer === target) earns nothing; there are no
+    // teams, so every cross-player hit is hostile. Snapshots carry the new balance to the HUD.
+    if (killer.id !== target.id) killer.credits = addCredits(killer.credits, CREDITS_PER_HIT);
+
     if (target.hp <= 0) {
       target.hp = 0;
       target.st = ST_DEAD;
@@ -693,7 +705,10 @@ export class GameRoomCore {
       target.rocketAmmo = 0;
       target.grenades = 0;
       target.armor = 0;
-      if (killer.id !== target.id) killer.frags += 1; // no frag credit for a self-kill (e.g. own grenade / fall)
+      if (killer.id !== target.id) {
+        killer.frags += 1; // no frag credit for a self-kill (e.g. own grenade / fall)
+        killer.credits = addCredits(killer.credits, CREDITS_PER_KILL); // kill bonus on top of the hit
+      }
       const kill: KillMsg = { t: "kill", by: killer.id, on: target.id, w: 0, blast };
       this.broadcast(kill);
     }
@@ -907,6 +922,7 @@ export class GameRoomCore {
       g: rec.grenades,
       a: rec.armor,
       pc: rec.pc,
+      credits: rec.credits,
     };
   }
 

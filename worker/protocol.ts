@@ -27,6 +27,15 @@ export const MOVE_BUDGET_SEC = 0.2;                       // anti-teleport token
 export const MATCH_DURATION_MS = 300_000;                 // 5-minute matches
 export const FRAG_LIMIT = 25;                             // match also ends at this many frags
 
+// --- Credits economy (issue #25) — the EARNING half of a CS-style economy; spending is a
+// separate linked buy-menu issue. Server-authoritative: credits live in PlayerRec, are reset to
+// STARTING_CREDITS at match start, awarded on confirmed hits/kills (never self/fall damage), and
+// clamped to CREDITS_CAP. They ride along in PlayerSnap so the HUD can show the local balance. ---
+export const STARTING_CREDITS = 800;   // credits each player begins a match with
+export const CREDITS_PER_HIT = 25;     // granted to the shooter on every confirmed damaging hit
+export const CREDITS_PER_KILL = 300;   // bonus granted to the killer on a frag (on top of the hit)
+export const CREDITS_CAP = 16000;      // balances are clamped to this ceiling
+
 // --- Text chat (issue #10) ---
 export const CHAT_MAX_LEN = 120;          // server caps each message body to this many chars
 export const CHAT_MIN_INTERVAL_MS = 500;  // per-player chat cooldown (max ~2 messages/sec)
@@ -210,7 +219,7 @@ export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | Roc
 // ---- Server -> Client ----
 // c = crouching, g = grenade count, a = armor, pc = parachute deployed.
 export interface PlayerSnap {
-  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean;
+  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean; credits?: number;
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
 export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; }
@@ -233,6 +242,12 @@ export interface HealthPickupMsg { t: "hpickup"; id: number; by: number; availab
 export interface ArmorPickupMsg { t: "apickup"; id: number; by: number; availableAt: number; } // armor taken
 export interface SpringPickupMsg { t: "sppickup"; id: number; by: number; availableAt: number; durationMs: number; } // spring boots taken
 export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg | ChatMsg;
+
+// Credits economy (issue #25): add `amount` to a balance, clamping into [0, CREDITS_CAP]. Pure so
+// both the server award path and unit tests share one definition (negative inputs floor at 0).
+export function addCredits(current: number, amount: number, cap: number = CREDITS_CAP): number {
+  return Math.max(0, Math.min(cap, current + amount));
+}
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }
 export function decode<T>(raw: string): T | null { try { return JSON.parse(raw) as T; } catch { return null; } }
