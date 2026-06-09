@@ -11,8 +11,12 @@ import {
   BOT_PREFERRED_RANGE,
   BOT_WANDER_INTERVAL_MS,
   BOT_BOUND,
+  BOT_RADIUS,
+  BOT_VISION_RANGE,
+  BOT_FOV_DOT,
   type Vec3,
   type Weapon,
+  type Rect,
 } from "./protocol";
 
 // Per-bot scratchpad held on the PlayerRec (game-core mutates it across ticks).
@@ -88,10 +92,105 @@ export function botHits(rand: () => number, accuracy: number): boolean {
   return rand() < accuracy;
 }
 
+// 2-D (XZ) segment-vs-rectangle test via Liang–Barsky. Returns true if the segment a→b touches
+// the axis-aligned rect (endpoints inside count). Used for line-of-sight occlusion.
+export function segmentIntersectsRect(ax: number, az: number, bx: number, bz: number, r: Rect): boolean {
+  const minX = r.x - r.w / 2, maxX = r.x + r.w / 2;
+  const minZ = r.z - r.d / 2, maxZ = r.z + r.d / 2;
+  const dx = bx - ax, dz = bz - az;
+  let t0 = 0, t1 = 1;
+  const edges: Array<[number, number]> = [
+    [-dx, ax - minX], [dx, maxX - ax],
+    [-dz, az - minZ], [dz, maxZ - az],
+  ];
+  for (const [p, q] of edges) {
+    if (p === 0) {
+      if (q < 0) return false; // parallel and outside this slab
+    } else {
+      const t = q / p;
+      if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+      else { if (t < t0) return false; if (t < t1) t1 = t; }
+    }
+  }
+  return t0 <= t1;
+}
+
+/** True if no occluder blocks the XZ sightline from `from` to `to`. */
+export function hasLineOfSight(from: Vec3, to: Vec3, occluders: readonly Rect[]): boolean {
+  for (const r of occluders) {
+    if (segmentIntersectsRect(from[0], from[2], to[0], to[2], r)) return false;
+  }
+  return true;
+}
+
+/**
+ * Can the bot see `targetPos`? Requires: within BOT_VISION_RANGE, inside the view cone (BOT_FOV_DOT
+ * of the bot's facing), and an unobstructed line of sight past the occluders. This is what gates a
+ * bot's awareness — a target it can't see is ignored entirely (no shooting through walls).
+ */
+export function canSee(selfPos: Vec3, selfYaw: number, targetPos: Vec3, occluders: readonly Rect[]): boolean {
+  const dx = targetPos[0] - selfPos[0];
+  const dz = targetPos[2] - selfPos[2];
+  const horiz = Math.hypot(dx, dz);
+  if (horiz > BOT_VISION_RANGE) return false;
+  if (horiz > 1e-6) {
+    const dot = -Math.sin(selfYaw) * (dx / horiz) + -Math.cos(selfYaw) * (dz / horiz);
+    if (dot < BOT_FOV_DOT) return false; // outside the view cone
+  }
+  return hasLineOfSight(selfPos, targetPos, occluders);
+}
+
+/** Nearest living, in-match enemy the bot can actually see (range + view cone + line of sight); null if none. */
+export function visibleEnemy(
+  selfId: number,
+  selfPos: Vec3,
+  selfYaw: number,
+  others: Combatant[],
+  occluders: readonly Rect[],
+): number | null {
+  let best: number | null = null;
+  let bestD = Infinity;
+  for (const o of others) {
+    if (o.id === selfId || !o.inMatch || o.st !== ST_ALIVE) continue;
+    if (!canSee(selfPos, selfYaw, o.p, occluders)) continue;
+    const dx = o.p[0] - selfPos[0];
+    const dz = o.p[2] - selfPos[2];
+    const d = dx * dx + dz * dz;
+    if (d < bestD) { bestD = d; best = o.id; }
+  }
+  return best;
+}
+
 export interface BotMove { p: Vec3; yaw: number; v: Vec3; }
 
 function clampBound(n: number): number {
   return Math.max(-BOT_BOUND, Math.min(BOT_BOUND, n));
+}
+
+// Is (x,z) inside any occluder rect, expanded by the bot's body radius `margin`?
+function pointBlocked(x: number, z: number, occluders: readonly Rect[], margin: number): boolean {
+  for (const r of occluders) {
+    if (
+      x > r.x - r.w / 2 - margin && x < r.x + r.w / 2 + margin &&
+      z > r.z - r.d / 2 - margin && z < r.z + r.d / 2 + margin
+    ) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve a desired XZ move against the occluders so bots can't walk through structures. Tries the
+ * full move, then each axis alone (wall-sliding), then gives up and stays put. The structures are
+ * far taller than the bot, so this 2-D test matches gameplay. Pure.
+ */
+export function resolveMove(
+  fromX: number, fromZ: number, toX: number, toZ: number,
+  occluders: readonly Rect[], margin: number,
+): [number, number] {
+  if (!pointBlocked(toX, toZ, occluders, margin)) return [toX, toZ];
+  if (!pointBlocked(toX, fromZ, occluders, margin)) return [toX, fromZ]; // slide along X
+  if (!pointBlocked(fromX, toZ, occluders, margin)) return [fromX, toZ]; // slide along Z
+  return [fromX, fromZ]; // fully blocked — hold position
 }
 
 /**
@@ -106,6 +205,7 @@ export function botMove(
   now: number,
   dtSec: number,
   rand: () => number,
+  occluders: readonly Rect[] = [],
 ): BotMove {
   let moveYaw: number;  // direction of travel
   let faceYaw: number;  // direction the bot looks (faces the target while strafing/backing off)
@@ -133,10 +233,9 @@ export function botMove(
   const step = BOT_MOVE_SPEED * Math.max(0, dtSec);
   const vx = -Math.sin(moveYaw) * BOT_MOVE_SPEED;
   const vz = -Math.cos(moveYaw) * BOT_MOVE_SPEED;
-  const p: Vec3 = [
-    clampBound(selfPos[0] + -Math.sin(moveYaw) * step),
-    EYE_HEIGHT,
-    clampBound(selfPos[2] + -Math.cos(moveYaw) * step),
-  ];
-  return { p, yaw: faceYaw, v: [vx, 0, vz] };
+  const candX = clampBound(selfPos[0] - Math.sin(moveYaw) * step);
+  const candZ = clampBound(selfPos[2] - Math.cos(moveYaw) * step);
+  // Don't walk through buildings: resolve the candidate against the occluders (wall-slide / stop).
+  const [rx, rz] = resolveMove(selfPos[0], selfPos[2], candX, candZ, occluders, BOT_RADIUS);
+  return { p: [rx, EYE_HEIGHT, rz], yaw: faceYaw, v: [vx, 0, vz] };
 }

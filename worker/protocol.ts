@@ -48,14 +48,32 @@ export const FRAG_LIMIT = 25;                             // match also ends at 
 // Server-driven opponents that occupy a PlayerRec with a no-op connection. Single "medium"
 // difficulty in v1: a per-shot hit chance + a short reaction delay before engaging.
 export const MAX_BOTS = MAX_PLAYERS_PER_ROOM - 1;         // leave room for at least one human
-export const BOT_ACCURACY = 0.5;                          // probability a fired bot shot lands
-export const BOT_REACTION_MS = 350;                       // delay after acquiring a target before firing
-export const BOT_FIRE_RANGE = 80;                         // bots only engage within this distance (units)
+export const BOT_ACCURACY = 0.35;                         // probability a fired bot shot lands
+export const BOT_REACTION_MS = 450;                       // delay after acquiring a target before firing
+export const BOT_FIRE_RANGE = 40;                         // bots only engage within this distance (units) — they close in first, no long-range sniping
 export const BOT_AIM_DOT = Math.cos((20 * Math.PI) / 180); // must be facing within ~20° to fire
 export const BOT_MOVE_SPEED = 6;                          // bot travel speed (units/sec; humans cap at 12)
 export const BOT_PREFERRED_RANGE = 28;                    // bots try to hold roughly this distance from a target
 export const BOT_WANDER_INTERVAL_MS = 2000;               // re-pick a wander heading this often when no target
 export const BOT_BOUND = 110;                             // soft arena bound bots stay within (walls are at ±120)
+export const BOT_RADIUS = 0.8;                            // bot body radius for structure collision (keeps them out of buildings)
+export const BOT_VISION_RANGE = 90;                       // a bot can only perceive targets within this distance
+export const BOT_FOV_DOT = Math.cos((70 * Math.PI) / 180); // 140° view cone: a target must be within ±70° of facing
+
+// Major sight-blocking structures as XZ rectangles (center x/z + full width/depth), used for the
+// bots' server-side line-of-sight test (the server has no scene geometry). All of these are far
+// taller than eye height, so a 2-D XZ occlusion test is correct for ground players. Mirrors the
+// `home(...)` and `ladderTower(...)` placements in src/map.ts. Small cover (crates/logs/containers)
+// is intentionally omitted — it doesn't reliably block a standing sightline.
+export interface Rect { x: number; z: number; w: number; d: number; }
+export const OCCLUDERS: readonly Rect[] = [
+  { x: 62, z: 0, w: 18, d: 18 }, { x: -62, z: 0, w: 16, d: 16 },
+  { x: 0, z: 62, w: 18, d: 18 }, { x: 0, z: -62, w: 16, d: 16 },
+  { x: 62, z: 62, w: 16, d: 16 }, { x: -62, z: -62, w: 18, d: 18 },
+  { x: 0, z: 0, w: 5, d: 5 },     // CENTER_TOWER
+  { x: 56, z: -56, w: 5, d: 5 },  // ROCKET_TOWER
+  { x: -56, z: 56, w: 5, d: 5 },  // WATCH_TOWER
+];
 
 // --- Ammo pickups (refill reserve by walking over a crate) ---
 export const PICKUP_RADIUS = 2.6;          // pick up within this XZ distance
