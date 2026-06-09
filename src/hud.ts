@@ -38,6 +38,12 @@ export function crosshairGapPx(spreadNdc: number): number {
   return 3 + Math.max(0, spreadNdc) * 220;
 }
 
+/** Pure (issue #25): format a credit balance for the HUD, e.g. 1250 → "$1,250" (floored, ≥0). */
+export function formatCredits(credits: number): string {
+  const n = Math.max(0, Math.floor(credits));
+  return "$" + n.toLocaleString("en-US");
+}
+
 /**
  * Pure: return a NEW array sorted for scoreboard display.
  * Order: frags desc, then deaths asc, then id asc (deterministic tie-break).
@@ -142,6 +148,7 @@ export class Hud {
   private root: HTMLDivElement;
   private healthFill: HTMLDivElement;
   private healthText: HTMLSpanElement;
+  private creditsEl!: HTMLDivElement;
   private armorWrap!: HTMLDivElement;
   private armorFill!: HTMLDivElement;
   private springEl!: HTMLDivElement;
@@ -243,6 +250,16 @@ export class Hud {
     root.appendChild(healthWrap);
     this.healthFill = fill;
     this.healthText = text;
+
+    // Credits readout (issue #25): the local player's server-authoritative balance, sat just to the
+    // right of the health bar (same bottom baseline, clear of the armor/spring/chat stack above).
+    const credits = document.createElement("div");
+    credits.style.cssText =
+      "position:absolute;left:270px;bottom:18px;height:22px;display:flex;align-items:center;" +
+      "color:#ffd54a;font:700 18px monospace;text-shadow:0 1px 2px #000;white-space:nowrap;";
+    credits.textContent = formatCredits(0);
+    root.appendChild(credits);
+    this.creditsEl = credits;
 
     // Armor bar (thin blue bar just above the health bar; hidden at 0 armor).
     const armorWrap = document.createElement("div");
@@ -667,6 +684,11 @@ export class Hud {
     const avg = averagePing(this.pingBuf);
     this.pingEl.textContent = `${avg} ms`;
     this.pingEl.style.color = pingColor(avg);
+  }
+
+  /** Update the credits readout from the local player's server-authoritative balance (issue #25). */
+  setCredits(credits: number): void {
+    this.creditsEl.textContent = formatCredits(credits);
   }
 
   /** Update the health bar from the local player's hp (0..MAX_HP). */
