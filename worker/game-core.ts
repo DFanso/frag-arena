@@ -17,6 +17,9 @@ import {
   ST_PROTECTED,
   ST_DEAD,
   ZONE_HEAD,
+  ZONE_CHEST,
+  MAX_BOTS,
+  BOT_ACCURACY,
   SPAWN_POINTS,
   IDLE_TIMEOUT_MS,
   RECONNECT_GRACE_MS,
@@ -114,6 +117,7 @@ import type {
 } from "./protocol";
 import { validateShoot, chooseSpawn, hitZone, zoneDamageMultiplier } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
+import { newBotState, nearestEnemy, botMove, botShouldFire, botHits, type BotState } from "./bot-ai";
 
 interface PlayerRec {
   id: number;
@@ -146,6 +150,7 @@ interface PlayerRec {
   armor: number;         // armor points (soak damage before hp; 0..MAX_ARMOR)
   c: boolean;            // crouching
   pc: boolean;           // parachute deployed (echoed for remote rendering)
+  bot?: BotState;        // present iff this is a server-driven AI bot (no real connection)
 }
 
 // A pending area-of-effect blast (grenade or rocket) awaiting detonation.
@@ -179,9 +184,12 @@ export class GameRoomCore {
 
   // Register a new connection. Returns false if the room is full (the caller should close the
   // socket); the socket is NEVER added to players/byId in that case.
-  public accept(conn: Conn, rawName: string | undefined, rawToken?: string): boolean {
+  public accept(conn: Conn, rawName: string | undefined, rawToken?: string, bots?: number): boolean {
     if (this.players.size >= MAX_PLAYERS_PER_ROOM) return false;
     this.addPlayer(conn, sanitizeName(rawName), rawToken);
+    // The room creator may request AI bots (issue #31). Spawn them once, when the room has none
+    // yet — later joiners' (absent/zero) bot counts are ignored so the count stays fixed.
+    if (bots && bots > 0 && this.countBots() === 0) this.addBots(bots);
     return true;
   }
 
@@ -357,6 +365,86 @@ export class GameRoomCore {
     return crypto.randomUUID();
   }
 
+  // ---- AI bots (issue #31) ----
+
+  private countBots(): number {
+    let n = 0;
+    for (const r of this.players.values()) if (r.bot) n++;
+    return n;
+  }
+
+  private hasHuman(): boolean {
+    for (const r of this.players.values()) if (!r.bot) return true;
+    return false;
+  }
+
+  // Add up to `n` bots, clamped to MAX_BOTS and the room's remaining capacity.
+  private addBots(n: number): void {
+    const slots = MAX_PLAYERS_PER_ROOM - this.players.size;
+    const count = Math.max(0, Math.min(Math.floor(n), MAX_BOTS, slots));
+    for (let i = 0; i < count; i++) this.addBot(`BOT-${i + 1}`);
+    if (count > 0) this.broadcastLobby();
+  }
+
+  // Create one bot: a PlayerRec backed by a no-op connection, always ready, lobby until the match
+  // starts. No reconnection token bookkeeping (a bot can't reconnect).
+  private addBot(name: string): void {
+    const id = this.nextId++;
+    const conn: Conn = { send() {}, close() {} };
+    const now = Date.now();
+    const rec: PlayerRec = {
+      id, token: this.newToken(), name, ws: conn,
+      p: [0, 0, 0], r: [0, 0], v: [0, 0, 0],
+      hp: MAX_HP, st: ST_ALIVE, frags: 0, deaths: 0,
+      lastShotAt: 0, lastInputAt: now, respawnAt: 0, protectedUntil: 0,
+      lastSeq: 0, rate: { windowStart: now, count: 0 },
+      ready: true, inMatch: false,
+      ammo: WEAPONS.map((w) => w.clipSize),
+      reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
+      reloadEndsAt: WEAPONS.map(() => 0),
+      lastGrenadeAt: 0, grenades: 0, hasRocket: false, rocketAmmo: 0, armor: 0,
+      c: false, pc: false, bot: newBotState(),
+    };
+    this.players.set(conn, rec);
+    this.byId.set(id, rec);
+  }
+
+  // Remove every bot (called when the last human leaves — no point simulating an empty room).
+  private dropAllBots(): void {
+    for (const [conn, rec] of [...this.players.entries()]) {
+      if (!rec.bot) continue;
+      this.players.delete(conn);
+      this.byId.delete(rec.id);
+    }
+  }
+
+  // Per-tick AI: each living bot picks the nearest enemy, moves (hunt / hold range / wander), and
+  // fires on a hit roll. Damage flows through applyDamage so bots are server-authoritative and
+  // score/respawn exactly like humans. Uses the chest zone (no per-limb aim for bots in v1).
+  private stepBots(now: number): void {
+    const dt = SERVER_TICK_MS / 1000;
+    const rifle = WEAPONS[0]!;
+    const view = [...this.players.values()].map((r) => ({ id: r.id, p: r.p, st: r.st, inMatch: r.inMatch }));
+    for (const rec of this.players.values()) {
+      const bs = rec.bot;
+      if (!bs || !rec.inMatch || rec.st === ST_DEAD) continue;
+      const targetId = nearestEnemy(rec.id, rec.p, view);
+      if (targetId !== bs.targetId) { bs.targetId = targetId; bs.engagedAt = now; } // reaction resets on a new target
+      const targetRec = targetId !== null ? this.byId.get(targetId) : undefined;
+      const move = botMove(bs, rec.p, targetRec ? targetRec.p : null, now, dt, Math.random);
+      rec.p = move.p;
+      rec.r = [move.yaw, 0];
+      rec.v = move.v;
+      if (targetRec && botShouldFire(rec.p, move.yaw, targetRec.p, now, rifle, bs)) {
+        bs.lastShotAt = now;
+        if (botHits(Math.random, BOT_ACCURACY)) {
+          const dmg = Math.round(rifle.damage * zoneDamageMultiplier(ZONE_CHEST, rifle));
+          this.applyDamage(targetRec, dmg, rec, false, false, ZONE_CHEST);
+        }
+      }
+    }
+  }
+
   // Drop saved identities whose reconnect grace window has elapsed.
   private pruneSavedIdentities(now: number): void {
     for (const [tok, s] of this.savedIdentities) {
@@ -372,10 +460,17 @@ export class GameRoomCore {
     this.maybeStartMatch();
   }
 
-  // Start the match iff there is ≥1 player and EVERY connected player is ready (no fallback).
+  // Start the match iff there is ≥1 human and EVERY human is ready. Bots are always ready and
+  // never trigger a start on their own, so a bots-only room stays idle in the lobby.
   private maybeStartMatch(): void {
     if (this.matchActive || this.players.size === 0) return;
-    for (const p of this.players.values()) if (!p.ready) return;
+    let humans = 0;
+    for (const p of this.players.values()) {
+      if (p.bot) continue;
+      humans++;
+      if (!p.ready) return;
+    }
+    if (humans === 0) return;
     this.startMatch();
   }
 
@@ -395,7 +490,7 @@ export class GameRoomCore {
     for (const rec of this.players.values()) {
       rec.frags = 0;
       rec.deaths = 0;
-      rec.ready = false;
+      rec.ready = rec.bot ? true : false; // bots are always ready (so the next match can start)
       rec.inMatch = true;
       rec.lastInputAt = now; // fresh idle window — they were in the lobby, not sending input
       this.spawn(rec); // resets hp/pos/protection + broadcasts a SpawnMsg
@@ -415,7 +510,7 @@ export class GameRoomCore {
     );
     const msg: MatchOverMsg = { t: "matchover", standings };
     this.broadcast(msg);
-    for (const rec of this.players.values()) { rec.inMatch = false; rec.ready = false; }
+    for (const rec of this.players.values()) { rec.inMatch = false; rec.ready = rec.bot ? true : false; }
     this.pendingBlasts = [];
     this.matchEndsAt = 0;
     this.broadcastLobby();
@@ -424,7 +519,7 @@ export class GameRoomCore {
   // Broadcast the current lobby roster (id/name/ready) + whether a match is running.
   private broadcastLobby(): void {
     const players: LobbyPlayer[] = [];
-    for (const rec of this.players.values()) players.push({ id: rec.id, name: rec.name, ready: rec.ready });
+    for (const rec of this.players.values()) players.push({ id: rec.id, name: rec.name, ready: rec.ready, ai: rec.bot ? true : undefined });
     const msg: LobbyMsg = { t: "lobby", players, matchActive: this.matchActive };
     this.broadcast(msg);
   }
@@ -448,6 +543,8 @@ export class GameRoomCore {
     }
     const leave: LeaveMsg = { t: "leave", id: rec.id };
     this.broadcast(leave);
+    // The last human leaving makes any remaining bots pointless — drop them so the room empties.
+    if (!this.hasHuman()) this.dropAllBots();
     this.broadcastLobby();          // roster changed
     this.stopLoopIfEmpty();
     if (!this.matchActive) this.maybeStartMatch(); // a leave may leave only ready players
@@ -749,10 +846,13 @@ export class GameRoomCore {
     // 2) Drop IN-MATCH players who stopped sending input (AFK). Lobby players send no input,
     //    so they are never idle-dropped. Iterate a SNAPSHOT (removePlayer mutates the maps).
     for (const rec of [...this.players.values()]) {
+      if (rec.bot) continue; // bots send no input — never idle-dropped
       if (rec.inMatch && now - rec.lastInputAt > IDLE_TIMEOUT_MS) {
         this.removePlayer(rec.ws);
       }
     }
+    // No humans left (e.g. all idled out) — drop the bots so the room can empty + evict.
+    if (!this.hasHuman() && this.countBots() > 0) { this.dropAllBots(); this.stopLoopIfEmpty(); }
     if (this.players.size === 0) return;
 
     // Lobby phase: the loop just keeps the room resident (state in memory). No snaps.
@@ -762,6 +862,9 @@ export class GameRoomCore {
     let anyInMatch = false;
     for (const rec of this.players.values()) if (rec.inMatch) { anyInMatch = true; break; }
     if (!anyInMatch) { this.endMatch(); return; }
+
+    // Drive the AI bots (move + fire) before the snapshot is built this tick.
+    this.stepBots(now);
 
     // Detonate grenades + rockets whose fuse / flight time has elapsed (AoE damage).
     if (this.pendingBlasts.length) {
@@ -922,6 +1025,7 @@ export class GameRoomCore {
       g: rec.grenades,
       a: rec.armor,
       pc: rec.pc,
+      ai: rec.bot ? true : undefined,
     };
   }
 

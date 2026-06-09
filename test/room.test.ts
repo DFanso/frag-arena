@@ -15,6 +15,7 @@ import {
   ST_PROTECTED,
   ZONE_LEGS,
   ZONE_MULT,
+  MAX_BOTS,
   IDLE_TIMEOUT_MS,
   WEAPONS,
   RESPAWN_MS,
@@ -1503,5 +1504,81 @@ describe("GameRoom reconnect identity", () => {
     expect(typeof w.token).toBe("string");
     expect(w.token.length).toBeGreaterThan(0);
     a.close();
+  });
+});
+
+// ---- appended: AI bots (#31) ----
+describe("GameRoom AI bots (#31)", () => {
+  const noopConn = () => ({ send() {}, close() {} } as unknown as WebSocket);
+
+  it("accept with a bot count spawns that many auto-ready bots alongside the human", async () => {
+    const stub = env.ROOMS.getByName("bots-spawn");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      inst.accept(noopConn(), "host", undefined, 3);
+      const recs = [...inst.players.values()];
+      const bots = recs.filter((r: any) => r.bot);
+      expect(bots.length).toBe(3);
+      expect(bots.every((b: any) => b.ready === true)).toBe(true); // bots are always ready
+      expect(recs.filter((r: any) => !r.bot).length).toBe(1);      // the human host
+    });
+  });
+
+  it("clamps the bot count to MAX_BOTS / remaining room capacity", async () => {
+    const stub = env.ROOMS.getByName("bots-clamp");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      inst.accept(noopConn(), "host", undefined, 99);
+      expect([...inst.players.values()].filter((r: any) => r.bot).length).toBe(MAX_BOTS); // + 1 human = full
+    });
+  });
+
+  it("ignores a later joiner's bot request once the room already has bots", async () => {
+    const stub = env.ROOMS.getByName("bots-once");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      inst.accept(noopConn(), "host", undefined, 2);
+      inst.accept(noopConn(), "joiner", undefined, 4); // should NOT add 4 more
+      expect([...inst.players.values()].filter((r: any) => r.bot).length).toBe(2);
+    });
+  });
+
+  it("starts the match when the lone human readies (bots are already ready)", async () => {
+    const stub = env.ROOMS.getByName("bots-start");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      const conn = noopConn();
+      inst.accept(conn, "host", undefined, 2);
+      inst.handleReady(inst.players.get(conn), true);
+      expect(inst.matchActive).toBe(true);
+      expect([...inst.players.values()].filter((r: any) => r.bot && r.inMatch).length).toBe(2);
+    });
+  });
+
+  it("does not start a match while no human has readied", async () => {
+    const stub = env.ROOMS.getByName("bots-noready");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      inst.accept(noopConn(), "host", undefined, 2);
+      expect(inst.matchActive).toBe(false);
+    });
+  });
+
+  it("drops every bot when the last human leaves", async () => {
+    const stub = env.ROOMS.getByName("bots-leave");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      const conn = noopConn();
+      inst.accept(conn, "host", undefined, 3);
+      expect([...inst.players.values()].filter((r: any) => r.bot).length).toBe(3);
+      inst.removePlayer(conn);
+      expect(inst.players.size).toBe(0); // human + all bots gone
+    });
   });
 });

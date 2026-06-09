@@ -58,7 +58,7 @@ function randomRoomCode(): string {
   return Math.random().toString(36).slice(2, 7);
 }
 
-function showStartScreen(): Promise<{ name: string; room: string }> {
+function showStartScreen(): Promise<{ name: string; room: string; bots: number }> {
   return new Promise((resolve) => {
     const initialRoom = sanitizeRoom(new URLSearchParams(location.search).get("room") ?? undefined);
     const overlay = document.createElement("div");
@@ -102,8 +102,26 @@ function showStartScreen(): Promise<{ name: string; room: string }> {
     const note = document.createElement("div");
     note.style.cssText = "font-size:13px;opacity:.7;height:16px";
 
+    // Add-bots row: a checkbox + a count (1–11). When checked, the room creator spawns AI bots.
+    const botRow = document.createElement("label");
+    botRow.style.cssText = "display:flex;align-items:center;gap:8px;font:14px monospace;cursor:pointer;";
+    const botToggle = document.createElement("input");
+    botToggle.type = "checkbox";
+    const botCount = document.createElement("input");
+    botCount.type = "number";
+    botCount.min = "1";
+    botCount.max = "11";
+    botCount.value = "3";
+    botCount.disabled = true;
+    botCount.style.cssText = "width:56px;font:14px monospace;padding:4px 6px;text-align:center;";
+    botToggle.addEventListener("change", () => { botCount.disabled = !botToggle.checked; });
+    botRow.appendChild(botToggle);
+    botRow.append("Add AI bots");
+    botRow.appendChild(botCount);
+
     overlay.appendChild(nameInput);
     overlay.appendChild(roomInput);
+    overlay.appendChild(botRow);
     overlay.appendChild(btnRow);
     overlay.appendChild(note);
 
@@ -135,9 +153,10 @@ function showStartScreen(): Promise<{ name: string; room: string }> {
       localStorage.setItem("cf-fps-name", name);
       // Reflect the room in the URL so a refresh / shared link keeps it.
       history.replaceState(null, "", room === "public" ? location.pathname : `?room=${room}`);
+      const bots = botToggle.checked ? Math.max(1, Math.min(11, Math.floor(Number(botCount.value) || 0))) : 0;
       disposeSettingsPanel(settingsPanel); // detach the panel's key-capture listener
       overlay.remove();
-      resolve({ name, room });
+      resolve({ name, room, bots });
     };
     playBtn.addEventListener("click", submit);
     for (const el of [nameInput, roomInput]) {
@@ -223,7 +242,8 @@ function makeLobby(onReady: (ready: boolean) => void): {
       list.innerHTML = "";
       for (const p of players) {
         const row = document.createElement("div");
-        row.textContent = `${p.name}${p.id === myId ? " (you)" : ""}  —  ${p.ready ? "✓ ready" : "· not ready"}`;
+        const tag = p.ai ? " 🤖" : p.id === myId ? " (you)" : "";
+        row.textContent = `${p.name}${tag}  —  ${p.ready ? "✓ ready" : "· not ready"}`;
         row.style.color = p.ready ? "#7CFC9A" : "#cfd6e6";
         list.appendChild(row);
       }
@@ -249,7 +269,7 @@ function makeLobby(onReady: (ready: boolean) => void): {
 // ---- main -------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const { name, room } = await showStartScreen();
+  const { name, room, bots } = await showStartScreen();
   const loading = showLoading();
 
   // Renderer + canvas (#game from index.html).
@@ -390,7 +410,7 @@ async function main(): Promise<void> {
 
   // ---- networking (name travels in the WS URL query — D5) -------------------
 
-  const net = new Net(room, name);
+  const net = new Net(room, name, bots);
   const lobby = makeLobby((ready: boolean) => net.send({ t: "ready", ready }));
 
   net.on("welcome", (m: WelcomeMsg) => {
