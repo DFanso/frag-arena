@@ -77,9 +77,11 @@ import {
   ROCKET_DAMAGE,
   ROCKET_MAX_RANGE,
   ROCKET_TOWERS,
+  CHAT_MIN_INTERVAL_MS,
   decode,
   encode,
   sanitizeName,
+  sanitizeChat,
 } from "./protocol";
 import type {
   Conn,
@@ -113,6 +115,7 @@ import type {
   ArmorPickupMsg,
   SpringPickupMsg,
   FallMsg,
+  ChatMsg,
   Weapon,
   HitZone,
 } from "./protocol";
@@ -145,6 +148,7 @@ interface PlayerRec {
   reserveAmmo: number[]; // rounds in reserve, per weapon id
   reloadEndsAt: number[]; // server epoch ms a reload completes, per weapon (0 = not reloading)
   lastGrenadeAt: number; // server epoch ms of the last grenade throw (cooldown)
+  lastChatAt: number;    // server epoch ms of the last chat message (per-player chat cooldown)
   grenades: number;      // grenades in hand (limited resource; refilled by pickups / on spawn)
   hasRocket: boolean;    // is the player currently holding the rocket launcher (tower pickup)?
   rocketAmmo: number;    // rockets left in the held launcher (dropped when it hits 0)
@@ -255,6 +259,10 @@ export class GameRoomCore {
       this.handleFall(rec, msg);
       return;
     }
+    if (msg.t === "chat") {
+      this.handleChat(rec, msg);
+      return;
+    }
   }
 
   // ---- match / player lifecycle ----
@@ -326,6 +334,7 @@ export class GameRoomCore {
       reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
       reloadEndsAt: WEAPONS.map(() => 0),
       lastGrenadeAt: 0,
+      lastChatAt: 0,
       grenades: GRENADE_START,
       hasRocket: false,
       rocketAmmo: 0,
@@ -404,7 +413,7 @@ export class GameRoomCore {
       reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
       reloadEndsAt: WEAPONS.map(() => 0),
       lastGrenadeAt: 0, grenades: 0, hasRocket: false, rocketAmmo: 0, armor: 0,
-      c: false, pc: false, bot: newBotState(),
+      c: false, pc: false, lastChatAt: 0, bot: newBotState(),
     };
     this.players.set(conn, rec);
     this.byId.set(id, rec);
@@ -773,6 +782,19 @@ export class GameRoomCore {
     const dmg = Math.max(0, Math.min(MAX_HP, Math.floor(m.dmg)));
     if (dmg <= 0) return;
     this.applyDamage(rec, dmg, rec, false, false); // killer === target → a suicide, no frag credit
+  }
+
+  // Text chat (issue #10). Sanitize the body, enforce a per-player cooldown (≤2 msgs/sec on top
+  // of the connection-wide rate limit), and re-broadcast with the SERVER's authoritative id/name
+  // (never the client's claimed `from`/`name`) so a client can't impersonate another player.
+  // Works in the lobby AND in-match — chat doesn't depend on being a game entity.
+  private handleChat(rec: PlayerRec, m: ChatMsg): void {
+    const body = sanitizeChat(m.body);
+    if (!body) return; // empty / whitespace-only after sanitizing — nothing to say
+    const now = Date.now();
+    if (now - rec.lastChatAt < CHAT_MIN_INTERVAL_MS) return; // too fast (chat flood guard)
+    rec.lastChatAt = now;
+    this.broadcast({ t: "chat", from: rec.id, name: rec.name, body } satisfies ChatMsg);
   }
 
   // Apply damage (armor soaks first), broadcast a hit, and handle death/respawn/scoring.

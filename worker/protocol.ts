@@ -77,6 +77,11 @@ export const OCCLUDERS: readonly Rect[] = [
   { x: -56, z: 56, w: 5, d: 5 },  // WATCH_TOWER
 ];
 
+// --- Text chat (issue #10) ---
+export const CHAT_MAX_LEN = 120;          // server caps each message body to this many chars
+export const CHAT_MIN_INTERVAL_MS = 500;  // per-player chat cooldown (max ~2 messages/sec)
+export const CHAT_HISTORY = 10;           // chat log shows the last N messages (client)
+
 // --- Ammo pickups (refill reserve by walking over a crate) ---
 export const PICKUP_RADIUS = 2.6;          // pick up within this XZ distance
 export const PICKUP_RESPAWN_MS = 15000;    // a used crate returns after this long
@@ -246,7 +251,11 @@ export interface RocketMsg { t: "rocket"; seq: number; ts: number; o: Vec3; d: V
 // Self-inflicted fall damage. The client detects a hard landing and claims the damage; the
 // server clamps it and applies it to the sender (movement/landing is client-authoritative).
 export interface FallMsg { t: "fall"; dmg: number; }
-export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | RocketMsg | FallMsg;
+// Text chat (issue #10). The same shape travels both ways: the client sends a chat with its body
+// (the `from`/`name` it fills are advisory — the server overwrites them with the connection's own
+// authoritative id/name and re-sanitizes the body before re-broadcasting to the whole room).
+export interface ChatMsg { t: "chat"; from: number; name: string; body: string; }
+export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | RocketMsg | FallMsg | ChatMsg;
 
 // ---- Server -> Client ----
 // c = crouching, g = grenade count, a = armor, pc = parachute deployed.
@@ -273,7 +282,7 @@ export interface GrenadePickupMsg { t: "gpickup"; id: number; by: number; availa
 export interface HealthPickupMsg { t: "hpickup"; id: number; by: number; availableAt: number; } // health syringe taken
 export interface ArmorPickupMsg { t: "apickup"; id: number; by: number; availableAt: number; } // armor taken
 export interface SpringPickupMsg { t: "sppickup"; id: number; by: number; availableAt: number; durationMs: number; } // spring boots taken
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg;
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg | ChatMsg;
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }
 export function decode<T>(raw: string): T | null { try { return JSON.parse(raw) as T; } catch { return null; } }
@@ -286,4 +295,14 @@ export function sanitizeRoom(code: string | undefined): string {
 export function sanitizeName(name: string | undefined): string {
   const n = (name ?? "").trim().replace(/[^\x20-\x7e]/g, "").slice(0, 16);
   return n.length ? n : "anon";
+}
+// Sanitize a chat message body (issue #10): drop non-printable-ASCII, collapse runs of
+// whitespace, trim, and cap at CHAT_MAX_LEN. Returns "" for an empty/blank message (the server
+// drops those — there's nothing to broadcast).
+export function sanitizeChat(body: string | undefined): string {
+  return (body ?? "")
+    .replace(/[^\x20-\x7e]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, CHAT_MAX_LEN);
 }
