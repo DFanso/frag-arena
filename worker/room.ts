@@ -33,9 +33,12 @@ export class GameRoom extends GameRoomCore {
       new WebSocketRequestResponsePair("ping", "pong"),
     );
 
-    // Nickname travels in the WS URL query (?name=...). The core sanitizes it.
-    const name = new URL(req.url).searchParams.get("name") ?? undefined;
-    if (!this.accept(server, name)) {
+    // Nickname + reconnect token travel in the WS URL query (?name=...&token=...).
+    const q = new URL(req.url).searchParams;
+    const name = q.get("name") ?? undefined;
+    const token = q.get("token") ?? undefined;
+    const bots = Number(q.get("bots")) || 0; // requested AI bots (room creator only; #31)
+    if (!this.accept(server, name, token, bots)) {
       // Room full: accept then immediately close so the client sees a clean 1013. The socket is
       // never added to players/byId.
       server.close(1013, "room full");

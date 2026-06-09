@@ -15,7 +15,7 @@ export interface WeaponDeps {
   nextSeq: () => number;
   send: (m: ShootMsg | ReloadMsg | ThrowMsg | RocketMsg) => void;
   baseFov: number;
-  onLocalShoot: (hit: boolean) => void;
+  onLocalShoot: (hit: boolean, weaponId: number) => void;
   onAmmo: (clip: number, reserve: number, reloading: boolean) => void;
   onWeapon: (name: string, id: number) => void;
   onScope: (active: boolean) => void;
@@ -23,7 +23,7 @@ export interface WeaponDeps {
   // on-screen aim speed stays roughly constant. main multiplies the persisted base sensitivity by it.
   onZoomSensitivity: (scale: number) => void;
   onRocket: (has: boolean) => void;        // rocket launcher gained / lost (HUD pickup banner)
-  sfx: { shoot(): void; reload(): void; dryFire(): void };
+  sfx: { shoot(sample?: string): void; reload(durationMs: number): void; dryFire(): void };
 }
 
 export class WeaponController {
@@ -134,7 +134,7 @@ export class WeaponController {
     if (this.reloading[w] || this.clip[w]! >= wp.clipSize || this.reserve[w]! <= 0) return;
     this.reloading[w] = true;
     this.d.send({ t: "reload", w });
-    if (w === this.cur) { this.d.sfx.reload(); this.emit(); }
+    if (w === this.cur) { this.d.sfx.reload(wp.reloadMs); this.emit(); }
     this.timers[w] = setTimeout(() => this.finishReload(w), wp.reloadMs);
   }
 
@@ -172,7 +172,7 @@ export class WeaponController {
     const res = fireRay(this.d.camera, this.d.getTargets(), spread);
     this.currentSpread = bumpSpread(this.currentSpread, wp.baseSpread, wp.sprayGrowth); // bloom for the next shot
     this.d.send({ t: "shoot", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, w, hit: res.hit, head: res.head, barrel: res.barrel });
-    this.d.onLocalShoot(res.hit !== null);
+    this.d.onLocalShoot(res.hit !== null, w);
     if (this.clip[w]! <= 0) this.startReload(w);
   }
 
@@ -185,7 +185,7 @@ export class WeaponController {
     this.emit();
     const res = fireRocket(this.d.camera, this.d.getTargets(), this.d.getWorldTargets());
     this.d.send({ t: "rocket", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, p: res.point, hit: res.hit, barrel: res.barrel });
-    this.d.onLocalShoot(res.hit !== null || res.barrel !== null); // launch sfx + recoil + flash (blast sfx plays on detonation)
+    this.d.onLocalShoot(res.hit !== null || res.barrel !== null, ROCKET_ID); // launch sfx + recoil + flash (blast sfx plays on detonation)
     if (this.clip[ROCKET_ID]! <= 0) {
       this.hasRocket = false;
       this.firing = false; // release the trigger so the auto rifle doesn't fire on the same held click

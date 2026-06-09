@@ -13,6 +13,9 @@ import {
   ST_ALIVE,
   ST_DEAD,
   ST_PROTECTED,
+  ZONE_LEGS,
+  ZONE_MULT,
+  MAX_BOTS,
   IDLE_TIMEOUT_MS,
   WEAPONS,
   RESPAWN_MS,
@@ -65,8 +68,10 @@ function roomStub(roomName: string) {
 async function connect(
   stub: DurableObjectStub,
   name = "p",
+  token?: string,
 ): Promise<WebSocket> {
-  const url = "https://do/ws/test?name=" + encodeURIComponent(name);
+  let url = "https://do/ws/test?name=" + encodeURIComponent(name);
+  if (token) url += "&token=" + encodeURIComponent(token);
   const res = await stub.fetch(url, { headers: { Upgrade: "websocket" } });
   expect(res.status).toBe(101);
   const ws = res.webSocket;
@@ -467,7 +472,7 @@ describe("GameRoom.handleShoot", () => {
         seq: 1,
         ts: now,
         o: [0, 1, 0],
-        d: [0, 0, 1],
+        d: [0, -0.03, 1], // aim at the chest zone (mult 1.0) so this exercises plain base damage
         w: 0,
         hit: 2,
         head: false,
@@ -514,12 +519,13 @@ describe("GameRoom.handleShoot", () => {
       const target = makeRec(2, [0, 1, 10]);
       inst.byId.set(1, shooter);
       inst.byId.set(2, target);
-      // Aim DOWN at the body while lying head:true. The server's isHeadshot check overrides the
-      // false claim, so only base damage lands (no free 2x) and the hit is reported as not-head.
+      // Aim DOWN at the body while lying head:true. The server computes the zone from geometry
+      // (issue #29): this low shot is a LEGS hit, so leg-scaled damage lands (never the head 2x)
+      // and the hit is reported as not-head — a false head claim can't grant a headshot.
       inst.handleShoot(shooter, {
         t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, -0.1, 1], w: 0, hit: 2, head: true,
       });
-      expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage); // base damage, NOT the head multiplier
+      expect(target.hp).toBe(MAX_HP - Math.round(WEAPONS[0]!.damage * ZONE_MULT[ZONE_LEGS])); // leg damage, NOT the head multiplier
       const hit = broadcasts.find((b) => (b as { t?: string }).t === "hit") as { head: boolean } | undefined;
       expect(hit?.head).toBe(false);
     });
@@ -932,10 +938,10 @@ describe("GameRoom death / respawn / protection / score", () => {
       inst.byId.set(1, shooter);
       inst.byId.set(2, target);
       inst.handleShoot(shooter, {
-        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, -0.03, 1], w: 0, hit: 2, head: false,
       });
       expect(shooter.st).toBe(ST_ALIVE);
-      // and the shot still landed (protection only gates being shot, not shooting)
+      // and the shot still landed (protection only gates being shot, not shooting) — chest = base dmg
       expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage);
     });
   });
@@ -1449,6 +1455,130 @@ describe("GameRoom out-of-bounds kill floor (issue #23)", () => {
       inst.ingestInput(rec, { t: "in", seq: 1, ts: now, p: [0, KZ_FLOOR + 1, 0], r: [0, 0], v: [0, 0, 0] });
       expect(rec.st).toBe(ST_ALIVE);
       expect(rec.deaths).toBe(0);
+    });
+  });
+});
+
+// ---- reconnection identity (issue #12) ----
+describe("GameRoom reconnect identity", () => {
+  it("restores id + score + in-match state on reconnect with the session token", async () => {
+    const stub = roomStub("reconnect-restore");
+    const a = await connect(stub, "alice");
+    const w1 = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    expect(w1.rejoin).toBe(false);
+    expect(typeof w1.token).toBe("string");
+    expect(w1.token.length).toBeGreaterThan(0);
+
+    // Put alice into a live match with a score, then simulate a disconnect (saves identity).
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.startMatch();
+      const rec = i.byId.get(w1.id);
+      rec.frags = 7;
+      rec.deaths = 2;
+      i.removePlayer(rec.ws);
+      expect(i.byId.has(w1.id)).toBe(false);
+    });
+
+    // Reconnect with the same token → same id, restored score, back in the match.
+    const a2 = await connect(stub, "alice", w1.token);
+    const w2 = await nextMessage<WelcomeMsg>(a2, ["welcome"]);
+    expect(w2.rejoin).toBe(true);
+    expect(w2.id).toBe(w1.id);
+    expect(w2.token).toBe(w1.token);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      const rec = i.byId.get(w1.id);
+      expect(rec.frags).toBe(7);
+      expect(rec.deaths).toBe(2);
+      expect(rec.inMatch).toBe(true);
+    });
+    a2.close();
+  });
+
+  it("joins fresh (rejoin=false) when the reconnect token is unknown", async () => {
+    const stub = roomStub("reconnect-unknown");
+    const a = await connect(stub, "bob", "not-a-real-token");
+    const w = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    expect(w.rejoin).toBe(false);
+    expect(typeof w.token).toBe("string");
+    expect(w.token.length).toBeGreaterThan(0);
+    a.close();
+  });
+});
+
+// ---- appended: AI bots (#31) ----
+describe("GameRoom AI bots (#31)", () => {
+  const noopConn = () => ({ send() {}, close() {} } as unknown as WebSocket);
+
+  it("accept with a bot count spawns that many auto-ready bots alongside the human", async () => {
+    const stub = env.ROOMS.getByName("bots-spawn");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      inst.accept(noopConn(), "host", undefined, 3);
+      const recs = [...inst.players.values()];
+      const bots = recs.filter((r: any) => r.bot);
+      expect(bots.length).toBe(3);
+      expect(bots.every((b: any) => b.ready === true)).toBe(true); // bots are always ready
+      expect(recs.filter((r: any) => !r.bot).length).toBe(1);      // the human host
+    });
+  });
+
+  it("clamps the bot count to MAX_BOTS / remaining room capacity", async () => {
+    const stub = env.ROOMS.getByName("bots-clamp");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      inst.accept(noopConn(), "host", undefined, 99);
+      expect([...inst.players.values()].filter((r: any) => r.bot).length).toBe(MAX_BOTS); // + 1 human = full
+    });
+  });
+
+  it("ignores a later joiner's bot request once the room already has bots", async () => {
+    const stub = env.ROOMS.getByName("bots-once");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      inst.accept(noopConn(), "host", undefined, 2);
+      inst.accept(noopConn(), "joiner", undefined, 4); // should NOT add 4 more
+      expect([...inst.players.values()].filter((r: any) => r.bot).length).toBe(2);
+    });
+  });
+
+  it("starts the match when the lone human readies (bots are already ready)", async () => {
+    const stub = env.ROOMS.getByName("bots-start");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      const conn = noopConn();
+      inst.accept(conn, "host", undefined, 2);
+      inst.handleReady(inst.players.get(conn), true);
+      expect(inst.matchActive).toBe(true);
+      expect([...inst.players.values()].filter((r: any) => r.bot && r.inMatch).length).toBe(2);
+    });
+  });
+
+  it("does not start a match while no human has readied", async () => {
+    const stub = env.ROOMS.getByName("bots-noready");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      inst.accept(noopConn(), "host", undefined, 2);
+      expect(inst.matchActive).toBe(false);
+    });
+  });
+
+  it("drops every bot when the last human leaves", async () => {
+    const stub = env.ROOMS.getByName("bots-leave");
+    await runInDurableObject(stub, (instance) => {
+      const inst = instance as any;
+      inst.broadcast = () => {};
+      const conn = noopConn();
+      inst.accept(conn, "host", undefined, 3);
+      expect([...inst.players.values()].filter((r: any) => r.bot).length).toBe(3);
+      inst.removePlayer(conn);
+      expect(inst.players.size).toBe(0); // human + all bots gone
     });
   });
 });

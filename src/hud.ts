@@ -143,6 +143,7 @@ export class Hud {
   private grenadeEl: HTMLDivElement;
   private rocketBannerEl: HTMLDivElement;
   private rocketBannerTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconnectEl!: HTMLDivElement;
   private scopeEl: HTMLDivElement;
   private prompt: HTMLDivElement;
   private hitMarker: HTMLDivElement;
@@ -311,6 +312,17 @@ export class Hud {
       "background:rgba(60,20,0,.5);padding:4px 16px;border-radius:6px;white-space:nowrap;";
     root.appendChild(rocketBanner);
     this.rocketBannerEl = rocketBanner;
+
+    // Reconnecting banner — appended to the body (above lobby/results) so it's always visible
+    // while the socket is down and retrying.
+    const reconnect = document.createElement("div");
+    reconnect.textContent = "RECONNECTING…";
+    reconnect.style.cssText =
+      "position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);display:none;" +
+      "pointer-events:none;color:#ffe;font:700 22px monospace;letter-spacing:2px;" +
+      "text-shadow:0 2px 6px #000;background:rgba(0,0,0,.6);padding:10px 24px;border-radius:8px;z-index:60;";
+    parent.appendChild(reconnect);
+    this.reconnectEl = reconnect;
 
     // Sniper scope overlay (hidden until ADS with a scoped weapon). Clear center circle,
     // dark surround, thin reticle lines; the normal crosshair shows through the center.
@@ -734,6 +746,14 @@ export class Hud {
     this.resultsEl.style.display = "none";
   }
 
+  /** Show/hide the "RECONNECTING…" banner (socket dropped / restored). */
+  showReconnecting(): void {
+    this.reconnectEl.style.display = "block";
+  }
+  hideReconnecting(): void {
+    this.reconnectEl.style.display = "none";
+  }
+
   /** Detach listeners and remove the overlay (for teardown/tests). */
   dispose(): void {
     window.removeEventListener("keydown", this.onKeyDown);
@@ -744,6 +764,7 @@ export class Hud {
     if (this.dirTimer !== undefined) clearTimeout(this.dirTimer);
     this.root.remove();
     this.resultsEl.remove();
+    this.reconnectEl.remove();
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {

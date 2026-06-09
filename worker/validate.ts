@@ -2,13 +2,21 @@
 import {
   HIT_RADIUS,
   HEAD_THRESHOLD,
+  CHEST_MIN_HEIGHT,
+  STOMACH_MIN_HEIGHT,
   EYE_HEIGHT,
   CROUCH_EYE_HEIGHT,
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
   ST_ALIVE,
+  ZONE_LEGS,
+  ZONE_STOMACH,
+  ZONE_CHEST,
+  ZONE_HEAD,
+  ZONE_MULT,
   type Vec3,
   type Weapon,
+  type HitZone,
 } from "./protocol";
 
 export type ShootReject =
@@ -79,21 +87,38 @@ export function validateShoot(
   return null;
 }
 
-// Server-side headshot verification. A `head` claim from the client is only honored when the
-// geometry agrees: where the aim ray crosses the target's vertical column (its XZ position),
-// is the impact height more than HEAD_THRESHOLD above the target's feet? `target` is the EYE
-// position, so feet = eye.y - eyeHeight (eyeHeight depends on the target's crouch state). This
-// mirrors the client's isHead() but is authoritative, so a body/leg shot can't claim 2x.
-export function isHeadshot(shooter: Vec3, target: Vec3, dir: Vec3, crouched: boolean): boolean {
+// Server-authoritative per-limb hit zone (issue #29). Finds where the aim ray crosses the
+// target's vertical column (its XZ position) and classifies the impact height above the target's
+// feet into head / chest / stomach / legs. `target` is the EYE position, so feet = eye.y -
+// eyeHeight (eyeHeight depends on the target's crouch state). The client's `head` claim is NOT
+// consulted — the zone (and thus damage) is derived purely from geometry. A near-vertical aim
+// (no meaningful column crossing) or a target behind the shooter falls back to the chest zone,
+// since validateShoot has already confirmed the shot is otherwise a valid body hit.
+export function hitZone(shooter: Vec3, target: Vec3, dir: Vec3, crouched: boolean): HitZone {
   const dn = norm(dir);
   const denomXZ = dn[0] * dn[0] + dn[2] * dn[2];
-  if (denomXZ < 1e-9) return false; // near-vertical aim: no meaningful column crossing
-  // Parameter along the ray closest to the target's XZ column.
+  if (denomXZ < 1e-9) return ZONE_CHEST;
   const t = ((target[0] - shooter[0]) * dn[0] + (target[2] - shooter[2]) * dn[2]) / denomXZ;
-  if (t <= 0) return false; // target column is behind the shooter
+  if (t <= 0) return ZONE_CHEST;
   const hitY = shooter[1] + dn[1] * t;
   const feetY = target[1] - (crouched ? CROUCH_EYE_HEIGHT : EYE_HEIGHT);
-  return hitY - feetY > HEAD_THRESHOLD;
+  const h = hitY - feetY; // impact height above the feet
+  if (h > HEAD_THRESHOLD) return ZONE_HEAD;
+  if (h >= CHEST_MIN_HEIGHT) return ZONE_CHEST;
+  if (h >= STOMACH_MIN_HEIGHT) return ZONE_STOMACH;
+  return ZONE_LEGS;
+}
+
+// Back-compat helper (issue #17): a shot is a headshot iff its server-computed zone is the head.
+// Kept so callers/tests that only care about "head or not" stay simple.
+export function isHeadshot(shooter: Vec3, target: Vec3, dir: Vec3, crouched: boolean): boolean {
+  return hitZone(shooter, target, dir, crouched) === ZONE_HEAD;
+}
+
+// Damage multiplier for a zone: the head uses the weapon's own headMult (preserving per-weapon
+// head scaling); the other zones use the shared CS-style ZONE_MULT table.
+export function zoneDamageMultiplier(zone: HitZone, weapon: Weapon): number {
+  return zone === ZONE_HEAD ? weapon.headMult : ZONE_MULT[zone];
 }
 
 // Clamp a claimed new position to a plausible distance from the last known one.

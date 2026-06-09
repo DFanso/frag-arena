@@ -7,6 +7,7 @@ export const CLIENT_SEND_MS = 1000 / CLIENT_SEND_HZ;      // ~16.67
 export const INTERP_DELAY_MS = 45;                        // ~2x tick interval + jitter margin (was 120 @ 20Hz on Cloudflare)
 export const MAX_PLAYERS_PER_ROOM = 12;
 export const IDLE_TIMEOUT_MS = 30_000;
+export const RECONNECT_GRACE_MS = 30_000; // a dropped player's identity (id/score/in-match) is restorable by token for this long
 export const MAX_MESSAGE_BYTES = 1024;                    // app-level cap (platform max is 32 MiB)
 export const RATE_LIMIT_MSGS_PER_SEC = 40;                // per connection
 export const RESPAWN_MS = 3000;
@@ -19,11 +20,60 @@ export const CROUCH_EYE_HEIGHT = 0.6;                    // capsule top y while 
 export const AIM_CONE_DOT = Math.cos((4 * Math.PI) / 180); // ~4 degrees (legacy; superseded by HIT_RADIUS)
 export const HIT_RADIUS = 1.2;                            // accept a shot whose aim ray passes within this of the target body
 export const HEAD_THRESHOLD = 0.8;                        // impact this far above the target's feet counts as a headshot (client + server)
+
+// --- Per-limb hit zones (issue #29) ---
+// The server classifies every hit into a zone by the impact height above the target's feet
+// (where the aim ray crosses the target's vertical column — see validate.hitZone). This replaces
+// the binary client-trusted head flag: damage = base * zone multiplier, computed server-side.
+export const ZONE_LEGS = 0;
+export const ZONE_STOMACH = 1;
+export const ZONE_CHEST = 2;
+export const ZONE_HEAD = 3;
+export type HitZone = typeof ZONE_LEGS | typeof ZONE_STOMACH | typeof ZONE_CHEST | typeof ZONE_HEAD;
+export const ZONE_NAMES: Record<HitZone, string> = { 0: "legs", 1: "stomach", 2: "chest", 3: "head" };
+// Height bands above the feet (standing eye height = 1.0). >= HEAD_THRESHOLD is the head;
+// then chest, then stomach; below STOMACH_MIN_HEIGHT is legs.
+export const CHEST_MIN_HEIGHT = 0.55;
+export const STOMACH_MIN_HEIGHT = 0.4;
+// CS-style damage multipliers for the non-head zones (the head uses the weapon's own headMult so
+// per-weapon head scaling — e.g. the sniper — is preserved). Stomach hurts more, legs less.
+export const ZONE_MULT: Record<HitZone, number> = { 0: 0.75, 1: 1.25, 2: 1.0, 3: 1.0 };
 export const MAX_MOVE_SPEED = 12;                         // units/sec
 export const MOVE_SPEED_TOLERANCE = 1.6;                  // allow bursts (jump pads etc.)
 export const MOVE_BUDGET_SEC = 0.2;                       // anti-teleport token-bucket burst (sec of travel absorbed before clamping; tolerates network jitter)
 export const MATCH_DURATION_MS = 300_000;                 // 5-minute matches
 export const FRAG_LIMIT = 25;                             // match also ends at this many frags
+
+// --- AI bots / NPCs (issue #31) ---
+// Server-driven opponents that occupy a PlayerRec with a no-op connection. Single "medium"
+// difficulty in v1: a per-shot hit chance + a short reaction delay before engaging.
+export const MAX_BOTS = MAX_PLAYERS_PER_ROOM - 1;         // leave room for at least one human
+export const BOT_ACCURACY = 0.35;                         // probability a fired bot shot lands
+export const BOT_REACTION_MS = 450;                       // delay after acquiring a target before firing
+export const BOT_FIRE_RANGE = 40;                         // bots only engage within this distance (units) — they close in first, no long-range sniping
+export const BOT_AIM_DOT = Math.cos((20 * Math.PI) / 180); // must be facing within ~20° to fire
+export const BOT_MOVE_SPEED = 6;                          // bot travel speed (units/sec; humans cap at 12)
+export const BOT_PREFERRED_RANGE = 28;                    // bots try to hold roughly this distance from a target
+export const BOT_WANDER_INTERVAL_MS = 2000;               // re-pick a wander heading this often when no target
+export const BOT_BOUND = 110;                             // soft arena bound bots stay within (walls are at ±120)
+export const BOT_RADIUS = 0.8;                            // bot body radius for structure collision (keeps them out of buildings)
+export const BOT_VISION_RANGE = 90;                       // a bot can only perceive targets within this distance
+export const BOT_FOV_DOT = Math.cos((70 * Math.PI) / 180); // 140° view cone: a target must be within ±70° of facing
+
+// Major sight-blocking structures as XZ rectangles (center x/z + full width/depth), used for the
+// bots' server-side line-of-sight test (the server has no scene geometry). All of these are far
+// taller than eye height, so a 2-D XZ occlusion test is correct for ground players. Mirrors the
+// `home(...)` and `ladderTower(...)` placements in src/map.ts. Small cover (crates/logs/containers)
+// is intentionally omitted — it doesn't reliably block a standing sightline.
+export interface Rect { x: number; z: number; w: number; d: number; }
+export const OCCLUDERS: readonly Rect[] = [
+  { x: 62, z: 0, w: 18, d: 18 }, { x: -62, z: 0, w: 16, d: 16 },
+  { x: 0, z: 62, w: 18, d: 18 }, { x: 0, z: -62, w: 16, d: 16 },
+  { x: 62, z: 62, w: 16, d: 16 }, { x: -62, z: -62, w: 18, d: 18 },
+  { x: 0, z: 0, w: 5, d: 5 },     // CENTER_TOWER
+  { x: 56, z: -56, w: 5, d: 5 },  // ROCKET_TOWER
+  { x: -56, z: 56, w: 5, d: 5 },  // WATCH_TOWER
+];
 
 // --- Ammo pickups (refill reserve by walking over a crate) ---
 export const PICKUP_RADIUS = 2.6;          // pick up within this XZ distance
@@ -161,8 +211,10 @@ export interface Weapon {
 // tower pickup (see ROCKET_* above) and only usable while held — its ammo is tracked separately
 // (PlayerRec.rocketAmmo), not through the magazine/reserve system, and its blast uses ROCKET_*.
 export const WEAPONS: readonly Weapon[] = [
-  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 120, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.004 },
-  { id: 1, name: "Sniper", damage: 90, headMult: 2, maxRange: 320, cooldownMs: 1100, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, zoomLevels: [1, 0.4, 0.2], auto: false, baseSpread: 0.001, sprayGrowth: 0.002 },
+  // Merge of master's balance (Sniper 150 dmg / 3000ms, Rifle reserve 10) with #28's zoomLevels
+  // and #20's baseSpread/sprayGrowth (both required by the Weapon interface above).
+  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 10, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.004 },
+  { id: 1, name: "Sniper", damage: 150, headMult: 2, maxRange: 320, cooldownMs: 3000, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, zoomLevels: [1, 0.4, 0.2], auto: false, baseSpread: 0.001, sprayGrowth: 0.002 },
   { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, zoomLevels: [1, 0.92], auto: false, baseSpread: 0, sprayGrowth: 0 },
 ];
 export const ROCKET_ID = 2; // index of the Rocket launcher in WEAPONS
@@ -199,18 +251,18 @@ export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | Roc
 // ---- Server -> Client ----
 // c = crouching, g = grenade count, a = armor, pc = parachute deployed.
 export interface PlayerSnap {
-  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean;
+  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean; ai?: boolean;
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
-export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; }
-export interface HitMsg     { t: "hit";     by: number; on: number; dmg: number; hp: number; head: boolean; }
+export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; token: string; rejoin: boolean; }
+export interface HitMsg     { t: "hit";     by: number; on: number; dmg: number; hp: number; head: boolean; zone?: HitZone; }
 export interface KillMsg    { t: "kill";    by: number; on: number; w: number; blast?: boolean; } // blast → client gibs the victim
 export interface SpawnMsg   { t: "spawn";   id: number; p: Vec3; prot: number; }
 export interface LeaveMsg   { t: "leave";   id: number; }
 export interface Standing { id: number; name: string; frags: number; deaths: number; }
 export interface MatchStartMsg { t: "matchstart"; endsAt: number; fragLimit: number; }
 export interface MatchOverMsg  { t: "matchover";  standings: Standing[]; }
-export interface LobbyPlayer { id: number; name: string; ready: boolean; }
+export interface LobbyPlayer { id: number; name: string; ready: boolean; ai?: boolean; }
 export interface LobbyMsg { t: "lobby"; players: LobbyPlayer[]; matchActive: boolean; }
 export interface GrenadeMsg { t: "grenade"; o: Vec3; v: Vec3; fuseMs: number; } // render the thrown arc + detonation
 export interface PickupMsg { t: "pickup"; id: number; by: number; availableAt: number; } // ammo crate taken

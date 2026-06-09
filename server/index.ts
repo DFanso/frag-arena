@@ -69,10 +69,12 @@ server.on("upgrade", (req, socket, head) => {
   }
   const roomCode = sanitizeRoom(decodeURIComponent(m[1]!));
   const name = params.get("name") ?? undefined;
-  wss.handleUpgrade(req, socket, head, (ws) => handleSocket(ws, roomCode, name));
+  const token = params.get("token") ?? undefined;
+  const bots = Number(params.get("bots")) || 0; // requested AI bots (room creator only; #31)
+  wss.handleUpgrade(req, socket, head, (ws) => handleSocket(ws, roomCode, name, token, bots));
 });
 
-function handleSocket(ws: WsSocket, roomCode: string, name: string | undefined): void {
+function handleSocket(ws: WsSocket, roomCode: string, name: string | undefined, token: string | undefined, bots = 0): void {
   const core = getRoom(roomCode);
   // Adapt the ws socket to the transport-agnostic Conn seam the core speaks.
   const conn: Conn = {
@@ -106,7 +108,7 @@ function handleSocket(ws: WsSocket, roomCode: string, name: string | undefined):
   ws.on("close", onGone);
   ws.on("error", onGone);
 
-  if (!core.accept(conn, name)) {
+  if (!core.accept(conn, name, token, bots)) {
     ws.close(1013, "room full"); // never registered; onGone cleans the (still-empty) room
   }
 }

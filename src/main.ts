@@ -58,7 +58,7 @@ function randomRoomCode(): string {
   return Math.random().toString(36).slice(2, 7);
 }
 
-function showStartScreen(): Promise<{ name: string; room: string }> {
+function showStartScreen(): Promise<{ name: string; room: string; bots: number }> {
   return new Promise((resolve) => {
     const initialRoom = sanitizeRoom(new URLSearchParams(location.search).get("room") ?? undefined);
     const overlay = document.createElement("div");
@@ -102,8 +102,26 @@ function showStartScreen(): Promise<{ name: string; room: string }> {
     const note = document.createElement("div");
     note.style.cssText = "font-size:13px;opacity:.7;height:16px";
 
+    // Add-bots row: a checkbox + a count (1–11). When checked, the room creator spawns AI bots.
+    const botRow = document.createElement("label");
+    botRow.style.cssText = "display:flex;align-items:center;gap:8px;font:14px monospace;cursor:pointer;";
+    const botToggle = document.createElement("input");
+    botToggle.type = "checkbox";
+    const botCount = document.createElement("input");
+    botCount.type = "number";
+    botCount.min = "1";
+    botCount.max = "11";
+    botCount.value = "3";
+    botCount.disabled = true;
+    botCount.style.cssText = "width:56px;font:14px monospace;padding:4px 6px;text-align:center;";
+    botToggle.addEventListener("change", () => { botCount.disabled = !botToggle.checked; });
+    botRow.appendChild(botToggle);
+    botRow.append("Add AI bots");
+    botRow.appendChild(botCount);
+
     overlay.appendChild(nameInput);
     overlay.appendChild(roomInput);
+    overlay.appendChild(botRow);
     overlay.appendChild(btnRow);
     overlay.appendChild(note);
 
@@ -135,9 +153,10 @@ function showStartScreen(): Promise<{ name: string; room: string }> {
       localStorage.setItem("cf-fps-name", name);
       // Reflect the room in the URL so a refresh / shared link keeps it.
       history.replaceState(null, "", room === "public" ? location.pathname : `?room=${room}`);
+      const bots = botToggle.checked ? Math.max(1, Math.min(11, Math.floor(Number(botCount.value) || 0))) : 0;
       disposeSettingsPanel(settingsPanel); // detach the panel's key-capture listener
       overlay.remove();
-      resolve({ name, room });
+      resolve({ name, room, bots });
     };
     playBtn.addEventListener("click", submit);
     for (const el of [nameInput, roomInput]) {
@@ -223,7 +242,8 @@ function makeLobby(onReady: (ready: boolean) => void): {
       list.innerHTML = "";
       for (const p of players) {
         const row = document.createElement("div");
-        row.textContent = `${p.name}${p.id === myId ? " (you)" : ""}  —  ${p.ready ? "✓ ready" : "· not ready"}`;
+        const tag = p.ai ? " 🤖" : p.id === myId ? " (you)" : "";
+        row.textContent = `${p.name}${tag}  —  ${p.ready ? "✓ ready" : "· not ready"}`;
         row.style.color = p.ready ? "#7CFC9A" : "#cfd6e6";
         list.appendChild(row);
       }
@@ -249,7 +269,7 @@ function makeLobby(onReady: (ready: boolean) => void): {
 // ---- main -------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const { name, room } = await showStartScreen();
+  const { name, room, bots } = await showStartScreen();
   const loading = showLoading();
 
   // Renderer + canvas (#game from index.html).
@@ -412,7 +432,7 @@ async function main(): Promise<void> {
 
   // ---- networking (name travels in the WS URL query — D5) -------------------
 
-  const net = new Net(room, name);
+  const net = new Net(room, name, bots);
   const lobby = makeLobby((ready: boolean) => net.send({ t: "ready", ready }));
 
   // Round-trip latency (#18): record the wall-clock send time per input seq; the server echoes
@@ -425,13 +445,29 @@ async function main(): Promise<void> {
     local = new LocalPlayer(myId);
     hud.setMyId(myId);
     matchEndsAt = m.matchEndsAt;
+    // On reconnect, dispose any remote players left over from before the drop, then rebuild.
+    if (m.rejoin) {
+      for (const rp of remotes.values()) { scene.remove(rp.group); rp.dispose(); }
+      remotes.clear();
+    }
     for (const ps of m.players) {
       if (ps.id !== myId) ensureRemote(ps);
     }
-    // New players land in the ready-up lobby (no auto-spawn). The "lobby" message follows.
-    phase = "lobby";
-    lobby.show();
+    if (m.rejoin && m.matchEndsAt > 0) {
+      // Rejoined an in-progress match: stay in the match (a SpawnMsg repositions us).
+      phase = "match";
+      lobby.hide();
+      hud.hideResults();
+    } else {
+      // New players land in the ready-up lobby (no auto-spawn). The "lobby" message follows.
+      phase = "lobby";
+      lobby.show();
+    }
   });
+
+  // Reconnect feedback: show a banner the moment the socket drops, hide it once it reopens.
+  net.on("close", () => hud.showReconnecting());
+  net.on("open", () => hud.hideReconnecting());
 
   net.on("lobby", (m: LobbyMsg) => {
     lobby.render(m.players, myId, m.matchActive);
@@ -597,6 +633,7 @@ async function main(): Promise<void> {
     matchEndsAt = m.endsAt;
     phase = "match";
     lobby.hide();
+    sfx.stopMusic(); // cut the outro if a new match starts
     hud.hideResults();
     hud.hideDeath();
     deadUntil = 0;
@@ -620,8 +657,9 @@ async function main(): Promise<void> {
     hud.hideDeath();
     controls.unlock(); // free the cursor for the lobby
     lobby.show();      // the lobby sits behind the results board (server also resent "lobby")
+    sfx.playMusic("outro"); // game-over outro song (stops on Continue / next match)
     // Results board on top; closing it reveals the lobby to ready up for the next match.
-    hud.showResults(m.standings, myId, () => hud.hideResults());
+    hud.showResults(m.standings, myId, () => { sfx.stopMusic(); hud.hideResults(); });
   });
 
   // ---- weapons (fire / reload / switch / ADS — single owner) ----------------
@@ -635,8 +673,9 @@ async function main(): Promise<void> {
     nextSeq: () => (local ? local.nextSeq() : 0),
     send: (m) => net.send(m),
     baseFov: camera.fov,
-    onLocalShoot: (hit) => {
-      sfx.shoot();
+    onLocalShoot: (hit, weaponId) => {
+      // sniper (id 1) → its fire+reload clip; rocket launcher / "mortar" (id 2) → launcher thump; else machine-gun.
+      sfx.shoot(weaponId === 1 ? "sniper" : weaponId === 2 ? "mortar" : "shoot");
       viewmodel.recoil(1 + (shootHandle?.getSpread() ?? 0) * 6); // kick scales with bloom (#20)
       viewmodel.flash();
       if (hit) hud.flashHitMarker();
@@ -648,7 +687,7 @@ async function main(): Promise<void> {
     // scale off the persisted base (the settings slider writes settings.sensitivity directly).
     onZoomSensitivity: (scale) => controls.setSensitivity(settings.sensitivity * scale),
     onRocket: (has) => hud.setRocket(has),
-    sfx: { shoot: () => sfx.shoot(), reload: () => sfx.reload(), dryFire: () => sfx.dryFire() },
+    sfx: { shoot: () => sfx.shoot(), reload: (ms) => sfx.reload(ms), dryFire: () => sfx.dryFire() },
   });
 
   // ---- Esc pause / settings overlay ---------------------------------------
