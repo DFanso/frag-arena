@@ -46,6 +46,8 @@ import { Barrels } from "./barrels";
 import { Blood } from "./blood";
 import { Doors } from "./doors";
 import { Hud, damageDirectionAngle } from "./hud";
+import { settings } from "./settings";
+import { buildSettingsPanel, disposeSettingsPanel } from "./settings-ui";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
 import { Viewmodel } from "./viewmodel";
@@ -104,6 +106,12 @@ function showStartScreen(): Promise<{ name: string; room: string }> {
     overlay.appendChild(roomInput);
     overlay.appendChild(btnRow);
     overlay.appendChild(note);
+
+    // Settings (sensitivity / FOV / volume / keybinds) — persisted now, applied when the game boots.
+    const settingsPanel = buildSettingsPanel();
+    settingsPanel.style.marginTop = "8px";
+    overlay.appendChild(settingsPanel);
+
     document.body.appendChild(overlay);
     nameInput.focus();
 
@@ -127,6 +135,7 @@ function showStartScreen(): Promise<{ name: string; room: string }> {
       localStorage.setItem("cf-fps-name", name);
       // Reflect the room in the URL so a refresh / shared link keeps it.
       history.replaceState(null, "", room === "public" ? location.pathname : `?room=${room}`);
+      disposeSettingsPanel(settingsPanel); // detach the panel's key-capture listener
       overlay.remove();
       resolve({ name, room });
     };
@@ -272,7 +281,7 @@ async function main(): Promise<void> {
 
   // Camera (rides the capsule top at EYE_HEIGHT). Must be in the scene for viewmodel to render.
   const camera = new THREE.PerspectiveCamera(
-    75,
+    settings.fov, // persisted field-of-view (WeaponController captures this as baseFov below)
     window.innerWidth / window.innerHeight,
     0.1,
     500,
@@ -296,6 +305,7 @@ async function main(): Promise<void> {
   const controls = new FpsControls(camera, renderer.domElement, octree, arena.ladders);
   const hud = new Hud();
   const sfx = new Sfx();
+  sfx.setVolume(settings.masterVolume); // apply persisted master volume (sensitivity is applied inside FpsControls)
   let local: LocalPlayer | undefined;
 
   // Hard landings claim fall damage from the server + kick the camera.
@@ -602,6 +612,39 @@ async function main(): Promise<void> {
     onScope: (active) => hud.setScope(active),
     onRocket: (has) => hud.setRocket(has),
     sfx: { shoot: () => sfx.shoot(), reload: () => sfx.reload(), dryFire: () => sfx.dryFire() },
+  });
+
+  // ---- Esc pause / settings overlay ---------------------------------------
+  // PointerLockControls releases the lock on Esc; show a pause overlay with the live settings
+  // panel (sliders + keybinds) once the player has locked at least once (so it doesn't cover the
+  // initial "Click to play" state). Resume re-locks (must be a user gesture, which the click is).
+  const pauseOverlay = document.createElement("div");
+  pauseOverlay.style.cssText =
+    "position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;" +
+    "gap:16px;background:rgba(0,0,0,.7);z-index:40;font-family:monospace;color:#dfe;";
+  const pauseTitle = document.createElement("div");
+  pauseTitle.textContent = "PAUSED";
+  pauseTitle.style.cssText = "font:700 30px monospace;letter-spacing:2px;";
+  const pausePanel = buildSettingsPanel({
+    onSensitivity: (v) => controls.setSensitivity(v),
+    onFov: (v) => shootHandle?.setBaseFov(v),
+    onVolume: (v) => sfx.setVolume(v),
+    onKeymap: (km) => controls.setKeymap(km),
+  });
+  const resumeBtn = document.createElement("button");
+  resumeBtn.textContent = "Resume";
+  resumeBtn.style.cssText =
+    "font:700 18px monospace;padding:10px 28px;cursor:pointer;background:#3c9;border:none;border-radius:4px;color:#062;";
+  resumeBtn.addEventListener("click", () => controls.lock());
+  pauseOverlay.appendChild(pauseTitle);
+  pauseOverlay.appendChild(pausePanel);
+  pauseOverlay.appendChild(resumeBtn);
+  document.body.appendChild(pauseOverlay);
+
+  let hasEverLocked = false;
+  controls.onLockChange((locked: boolean) => {
+    if (locked) { hasEverLocked = true; pauseOverlay.style.display = "none"; }
+    else if (hasEverLocked) { pauseOverlay.style.display = "flex"; }
   });
 
   // ---- resize --------------------------------------------------------------

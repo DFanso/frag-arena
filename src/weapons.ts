@@ -172,6 +172,12 @@ export class WeaponController {
     }
   }
 
+  /** Set the base (hip) FOV from settings; ADS zoom still multiplies it. Applies immediately. */
+  setBaseFov(fov: number): void {
+    this.d.baseFov = fov;
+    this.applyFov();
+  }
+
   private applyFov(): void {
     this.d.camera.fov = this.d.baseFov * (this.ads ? WEAPONS[this.cur]!.adsZoom : 1);
     this.d.camera.updateProjectionMatrix();

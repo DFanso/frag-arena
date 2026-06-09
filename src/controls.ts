@@ -14,6 +14,7 @@ import {
   type Vec3, type Rot,
 } from "../worker/protocol";
 import type { Ladder } from "./map";
+import { settings, type Action } from "./settings";
 
 // ---- Pure client-only movement tunables ----
 export const GRAVITY = 30;          // units/sec^2 (downward)
@@ -97,6 +98,7 @@ export class FpsControls {
   private peakY = EYE_HEIGHT;          // highest y reached since leaving the ground (fall tracking)
   private wasGrounded = true;          // grounded-or-laddered last frame
   private shakeAmt = 0;                // current screen-shake magnitude
+  private codeToAction = new Map<string, Action>(); // KeyboardEvent.code -> movement action (from settings.keymap)
   private onFallCb?: (dmg: number) => void;
   private doorOctree: Octree | null = null; // dynamic collision for closed doors
   private onUseCb?: (pos: Vec3) => void;     // E pressed on the ground (door / interact)
@@ -121,6 +123,21 @@ export class FpsControls {
     this.controls.addEventListener("unlock", this.onUnlock);
     document.addEventListener("keydown", this.onKeyDown);
     document.addEventListener("keyup", this.onKeyUp);
+
+    // Apply persisted preferences: mouse sensitivity + the rebindable movement keymap.
+    this.setSensitivity(settings.sensitivity);
+    this.setKeymap(settings.keymap);
+  }
+
+  /** Set the mouse-look multiplier (PointerLockControls.pointerSpeed). */
+  setSensitivity(s: number): void {
+    this.controls.pointerSpeed = s;
+  }
+
+  /** Replace the movement keymap (action -> KeyboardEvent.code); rebuilds the reverse lookup. */
+  setKeymap(km: Record<Action, string>): void {
+    this.codeToAction.clear();
+    for (const a of Object.keys(km) as Action[]) this.codeToAction.set(km[a], a);
   }
 
   lock(): void { this.controls.lock(); }
@@ -356,34 +373,34 @@ export class FpsControls {
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    // Crouching with Ctrl held would otherwise let Ctrl+key browser shortcuts through; suppress
-    // the page default for the Ctrl crouch keys (note: Ctrl+W tab-close can't be fully blocked).
+    // A Ctrl-bound action (e.g. crouch on Control) would otherwise leak Ctrl+key browser
+    // shortcuts; suppress the page default (note: Ctrl+W tab-close can't be fully blocked).
     if (e.code === "ControlLeft" || e.code === "ControlRight") e.preventDefault();
-    switch (e.code) {
-      case "KeyW": this.keys.w = true; break;
-      case "KeyA": this.keys.a = true; break;
-      case "KeyS": this.keys.s = true; break;
-      case "KeyD": this.keys.d = true; break;
-      case "Space": this.wantJump = true; break;
-      case "ShiftLeft": case "ShiftRight": this.sprinting = true; break;
-      case "KeyC": case "ControlLeft": case "ControlRight": this.wantCrouch = true; break;
-      // E is contextual: on the ground it interacts (open/close a door); airborne it parachutes.
-      case "KeyE":
+    switch (this.codeToAction.get(e.code)) {
+      case "forward": this.keys.w = true; break;
+      case "left": this.keys.a = true; break;
+      case "back": this.keys.s = true; break;
+      case "right": this.keys.d = true; break;
+      case "jump": this.wantJump = true; break;
+      case "sprint": this.sprinting = true; break;
+      case "crouch": this.wantCrouch = true; break;
+      // Interact is contextual: on the ground it opens/closes a door; airborne it parachutes.
+      case "interact":
         if (!this.isLocked) break;
         if (this.onFloor) this.onUseCb?.(this.getPosition());
         else this.toggleParachute();
         break;
-      case "KeyF": if (this.isLocked) this.toggleZip(); break;
+      case "zipline": if (this.isLocked) this.toggleZip(); break;
     }
   };
   private onKeyUp = (e: KeyboardEvent): void => {
-    switch (e.code) {
-      case "KeyW": this.keys.w = false; break;
-      case "KeyA": this.keys.a = false; break;
-      case "KeyS": this.keys.s = false; break;
-      case "KeyD": this.keys.d = false; break;
-      case "ShiftLeft": case "ShiftRight": this.sprinting = false; break;
-      case "KeyC": case "ControlLeft": case "ControlRight": this.wantCrouch = false; break;
+    switch (this.codeToAction.get(e.code)) {
+      case "forward": this.keys.w = false; break;
+      case "left": this.keys.a = false; break;
+      case "back": this.keys.s = false; break;
+      case "right": this.keys.d = false; break;
+      case "sprint": this.sprinting = false; break;
+      case "crouch": this.wantCrouch = false; break;
     }
   };
 
