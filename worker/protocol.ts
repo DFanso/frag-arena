@@ -48,9 +48,9 @@ export const FRAG_LIMIT = 25;                             // match also ends at 
 // Server-driven opponents that occupy a PlayerRec with a no-op connection. Single "medium"
 // difficulty in v1: a per-shot hit chance + a short reaction delay before engaging.
 export const MAX_BOTS = MAX_PLAYERS_PER_ROOM - 1;         // leave room for at least one human
-export const BOT_ACCURACY = 0.5;                          // probability a fired bot shot lands
-export const BOT_REACTION_MS = 350;                       // delay after acquiring a target before firing
-export const BOT_FIRE_RANGE = 80;                         // bots only engage within this distance (units)
+export const BOT_ACCURACY = 0.35;                         // probability a fired bot shot lands
+export const BOT_REACTION_MS = 450;                       // delay after acquiring a target before firing
+export const BOT_FIRE_RANGE = 40;                         // bots only engage within this distance (units) — they close in first, no long-range sniping
 export const BOT_AIM_DOT = Math.cos((20 * Math.PI) / 180); // must be facing within ~20° to fire
 export const BOT_MOVE_SPEED = 6;                          // bot travel speed (units/sec; humans cap at 12)
 export const BOT_PREFERRED_RANGE = 28;                    // bots try to hold roughly this distance from a target
