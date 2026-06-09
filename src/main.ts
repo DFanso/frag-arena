@@ -649,8 +649,8 @@ async function main(): Promise<void> {
     nextSeq: () => (local ? local.nextSeq() : 0),
     send: (m) => net.send(m),
     baseFov: camera.fov,
-    onLocalShoot: (hit) => {
-      sfx.shoot();
+    onLocalShoot: (hit, weaponId) => {
+      sfx.shoot(weaponId === 1 ? "sniper" : "shoot"); // sniper (id 1) has its own fire+reload clip
       viewmodel.recoil();
       viewmodel.flash();
       if (hit) hud.flashHitMarker();

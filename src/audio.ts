@@ -4,6 +4,7 @@
 // Sample SFX served from /public/sfx. Each falls back to a synth blip until it's decoded.
 const SAMPLE_URLS: Record<string, string> = {
   shoot: "/sfx/eaglaxle-gun-shot-1-530788.mp3",
+  sniper: "/sfx/sniper.mp3",
   reload: "/sfx/reload.mp3",
 };
 
@@ -68,8 +69,12 @@ export class Sfx {
     if (this.masterGain) this.masterGain.gain.value = this.volume;
   }
 
-  shoot(): void {
-    if (!this.playSample("shoot")) this.blip("square", 320, 140, 0.18, 0.05); // sample, else synth fallback
+  // Play a weapon's firing sound. `sample` selects the clip (e.g. "sniper"); it falls back to the
+  // default gunshot sample, then to the synth blip, so an unknown/not-yet-loaded sample is safe.
+  shoot(sample = "shoot"): void {
+    if (this.playSample(sample)) return;
+    if (this.playSample("shoot")) return;
+    this.blip("square", 320, 140, 0.18, 0.05);
   }
 
   hit(): void {
