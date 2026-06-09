@@ -37,7 +37,8 @@ export class GameRoom extends GameRoomCore {
     const q = new URL(req.url).searchParams;
     const name = q.get("name") ?? undefined;
     const token = q.get("token") ?? undefined;
-    if (!this.accept(server, name, token)) {
+    const bots = Number(q.get("bots")) || 0; // requested AI bots (room creator only; #31)
+    if (!this.accept(server, name, token, bots)) {
       // Room full: accept then immediately close so the client sees a clean 1013. The socket is
       // never added to players/byId.
       server.close(1013, "room full");

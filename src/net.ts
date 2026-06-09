@@ -18,6 +18,7 @@ export class Net {
   private closed = false;
   private room: string;
   private name: string;
+  private bots: number;
   private loc: LocationLike;
 
   // The nickname is baked into the URL query (contract D5 — no JoinMsg). A session token from
@@ -25,10 +26,12 @@ export class Net {
   constructor(
     room: string,
     name: string,
+    bots = 0,
     loc: LocationLike = window.location,
   ) {
     this.room = room;
     this.name = name;
+    this.bots = bots;
     this.loc = loc;
     this.open();
   }
@@ -42,9 +45,11 @@ export class Net {
   }
   // Rebuild the WS URL fresh on every connect so a reconnect carries the latest token.
   private buildUrl(): string {
-    const base = buildWsUrl(this.loc, this.room, this.name);
+    let url = buildWsUrl(this.loc, this.room, this.name);
+    if (this.bots > 0) url += `&bots=${this.bots}`; // room creator requests AI bots (#31)
     const tok = this.readToken();
-    return tok ? `${base}&token=${encodeURIComponent(tok)}` : base;
+    if (tok) url += `&token=${encodeURIComponent(tok)}`;
+    return url;
   }
 
   // Register a handler for a server message "t", or the synthetic "open"/"close".

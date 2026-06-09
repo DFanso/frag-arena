@@ -44,6 +44,19 @@ export const MOVE_BUDGET_SEC = 0.2;                       // anti-teleport token
 export const MATCH_DURATION_MS = 300_000;                 // 5-minute matches
 export const FRAG_LIMIT = 25;                             // match also ends at this many frags
 
+// --- AI bots / NPCs (issue #31) ---
+// Server-driven opponents that occupy a PlayerRec with a no-op connection. Single "medium"
+// difficulty in v1: a per-shot hit chance + a short reaction delay before engaging.
+export const MAX_BOTS = MAX_PLAYERS_PER_ROOM - 1;         // leave room for at least one human
+export const BOT_ACCURACY = 0.5;                          // probability a fired bot shot lands
+export const BOT_REACTION_MS = 350;                       // delay after acquiring a target before firing
+export const BOT_FIRE_RANGE = 80;                         // bots only engage within this distance (units)
+export const BOT_AIM_DOT = Math.cos((20 * Math.PI) / 180); // must be facing within ~20° to fire
+export const BOT_MOVE_SPEED = 6;                          // bot travel speed (units/sec; humans cap at 12)
+export const BOT_PREFERRED_RANGE = 28;                    // bots try to hold roughly this distance from a target
+export const BOT_WANDER_INTERVAL_MS = 2000;               // re-pick a wander heading this often when no target
+export const BOT_BOUND = 110;                             // soft arena bound bots stay within (walls are at ±120)
+
 // --- Ammo pickups (refill reserve by walking over a crate) ---
 export const PICKUP_RADIUS = 2.6;          // pick up within this XZ distance
 export const PICKUP_RESPAWN_MS = 15000;    // a used crate returns after this long
@@ -211,7 +224,7 @@ export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | Roc
 // ---- Server -> Client ----
 // c = crouching, g = grenade count, a = armor, pc = parachute deployed.
 export interface PlayerSnap {
-  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean;
+  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean; ai?: boolean;
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
 export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; token: string; rejoin: boolean; }
@@ -222,7 +235,7 @@ export interface LeaveMsg   { t: "leave";   id: number; }
 export interface Standing { id: number; name: string; frags: number; deaths: number; }
 export interface MatchStartMsg { t: "matchstart"; endsAt: number; fragLimit: number; }
 export interface MatchOverMsg  { t: "matchover";  standings: Standing[]; }
-export interface LobbyPlayer { id: number; name: string; ready: boolean; }
+export interface LobbyPlayer { id: number; name: string; ready: boolean; ai?: boolean; }
 export interface LobbyMsg { t: "lobby"; players: LobbyPlayer[]; matchActive: boolean; }
 export interface GrenadeMsg { t: "grenade"; o: Vec3; v: Vec3; fuseMs: number; } // render the thrown arc + detonation
 export interface PickupMsg { t: "pickup"; id: number; by: number; availableAt: number; } // ammo crate taken
