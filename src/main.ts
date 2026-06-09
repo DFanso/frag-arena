@@ -388,13 +388,29 @@ async function main(): Promise<void> {
     local = new LocalPlayer(myId);
     hud.setMyId(myId);
     matchEndsAt = m.matchEndsAt;
+    // On reconnect, dispose any remote players left over from before the drop, then rebuild.
+    if (m.rejoin) {
+      for (const rp of remotes.values()) { scene.remove(rp.group); rp.dispose(); }
+      remotes.clear();
+    }
     for (const ps of m.players) {
       if (ps.id !== myId) ensureRemote(ps);
     }
-    // New players land in the ready-up lobby (no auto-spawn). The "lobby" message follows.
-    phase = "lobby";
-    lobby.show();
+    if (m.rejoin && m.matchEndsAt > 0) {
+      // Rejoined an in-progress match: stay in the match (a SpawnMsg repositions us).
+      phase = "match";
+      lobby.hide();
+      hud.hideResults();
+    } else {
+      // New players land in the ready-up lobby (no auto-spawn). The "lobby" message follows.
+      phase = "lobby";
+      lobby.show();
+    }
   });
+
+  // Reconnect feedback: show a banner the moment the socket drops, hide it once it reopens.
+  net.on("close", () => hud.showReconnecting());
+  net.on("open", () => hud.hideReconnecting());
 
   net.on("lobby", (m: LobbyMsg) => {
     lobby.render(m.players, myId, m.matchActive);

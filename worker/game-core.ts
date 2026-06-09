@@ -18,6 +18,7 @@ import {
   ST_DEAD,
   SPAWN_POINTS,
   IDLE_TIMEOUT_MS,
+  RECONNECT_GRACE_MS,
   WEAPONS,
   RESPAWN_MS,
   SPAWN_PROTECTION_MS,
@@ -114,6 +115,7 @@ import { matchOutcome, rankPlayers } from "./match";
 
 interface PlayerRec {
   id: number;
+  token: string; // session token (sent in welcome; reconnect with it restores id/score/in-match)
   name: string;
   ws: Conn;
   p: Vec3;
@@ -154,6 +156,9 @@ export class GameRoomCore {
   private players = new Map<Conn, PlayerRec>();
   private byId = new Map<number, PlayerRec>();
   private nextId = 1;
+  // Identity of recently-disconnected players, keyed by session token, so a reconnect within
+  // RECONNECT_GRACE_MS restores their id / score / in-match state instead of joining fresh.
+  private savedIdentities = new Map<string, { id: number; name: string; frags: number; deaths: number; inMatch: boolean; savedAt: number }>();
   private tick = 0;
   private tickHandle: ReturnType<typeof setInterval> | undefined;
   private matchEndsAt = 0;     // server epoch ms the current match ends (0 = no active match)
@@ -172,9 +177,9 @@ export class GameRoomCore {
 
   // Register a new connection. Returns false if the room is full (the caller should close the
   // socket); the socket is NEVER added to players/byId in that case.
-  public accept(conn: Conn, rawName: string | undefined): boolean {
+  public accept(conn: Conn, rawName: string | undefined, rawToken?: string): boolean {
     if (this.players.size >= MAX_PLAYERS_PER_ROOM) return false;
-    this.addPlayer(conn, sanitizeName(rawName));
+    this.addPlayer(conn, sanitizeName(rawName), rawToken);
     return true;
   }
 
@@ -275,11 +280,19 @@ export class GameRoomCore {
     this.broadcast(msg);
   }
 
-  private addPlayer(ws: Conn, name: string): void {
-    const id = this.nextId++;
+  private addPlayer(ws: Conn, name: string, rawToken?: string): void {
     const now = Date.now();
+    this.pruneSavedIdentities(now);
+    // Reconnect: a matching, still-free saved token restores the player's identity + score.
+    const saved = rawToken ? this.savedIdentities.get(rawToken) : undefined;
+    const rejoin = saved !== undefined && !this.byId.has(saved.id);
+    const id = rejoin ? saved!.id : this.nextId++;
+    const token = rejoin ? rawToken! : this.newToken();
+    if (rejoin) this.savedIdentities.delete(rawToken!);
+    const resumeMatch = rejoin && saved!.inMatch && this.matchActive;
     const rec: PlayerRec = {
       id,
+      token,
       name,
       ws,
       p: [0, 0, 0] as Vec3, // will be set below after rec is created
@@ -288,8 +301,8 @@ export class GameRoomCore {
       v: [0, 0, 0],
       hp: MAX_HP,
       st: ST_ALIVE,
-      frags: 0,
-      deaths: 0,
+      frags: rejoin ? saved!.frags : 0,
+      deaths: rejoin ? saved!.deaths : 0,
       lastShotAt: 0,
       lastInputAt: now,
       respawnAt: 0,
@@ -297,7 +310,7 @@ export class GameRoomCore {
       lastSeq: 0,
       rate: { windowStart: now, count: 0 },
       ready: false,
-      inMatch: false,
+      inMatch: resumeMatch,
       ammo: WEAPONS.map((w) => w.clipSize),
       reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
       reloadEndsAt: WEAPONS.map(() => 0),
@@ -323,14 +336,30 @@ export class GameRoomCore {
     const welcome: WelcomeMsg = {
       t: "welcome",
       id,
+      token,
+      rejoin,
       tickRate: SERVER_TICK_HZ,
       players: existing,
       matchEndsAt: this.matchActive ? this.matchEndsAt : 0,
       fragLimit: FRAG_LIMIT,
     };
     this.send(ws, welcome);
+    // Rejoining an in-progress match: spawn straight back into the fight (broadcasts a SpawnMsg).
+    if (resumeMatch) this.spawn(rec);
     this.broadcastLobby();
     this.startLoop(); // keep the room resident (state in memory) while ≥1 player is connected
+  }
+
+  // A fresh session token. crypto.randomUUID is available in workerd, Node 18+, and browsers.
+  private newToken(): string {
+    return crypto.randomUUID();
+  }
+
+  // Drop saved identities whose reconnect grace window has elapsed.
+  private pruneSavedIdentities(now: number): void {
+    for (const [tok, s] of this.savedIdentities) {
+      if (now - s.savedAt > RECONNECT_GRACE_MS) this.savedIdentities.delete(tok);
+    }
   }
 
   // Toggle a player's ready state (lobby phase only) and start the match once ALL are ready.
@@ -403,6 +432,11 @@ export class GameRoomCore {
   public removePlayer(ws: Conn): void {
     const rec = this.players.get(ws);
     if (!rec) return;
+    // Preserve identity briefly so a reconnect with the same token restores id/score/in-match.
+    this.savedIdentities.set(rec.token, {
+      id: rec.id, name: rec.name, frags: rec.frags, deaths: rec.deaths,
+      inMatch: rec.inMatch, savedAt: Date.now(),
+    });
     this.players.delete(ws);
     this.byId.delete(rec.id);
     try {
