@@ -1,6 +1,6 @@
 // src/hud.ts — HUD overlay: crosshair, health bar, prompt, scoreboard, kill feed, hit marker.
-import { MAX_HP, MAX_ARMOR, SPRING_DURATION_MS, ST_DEAD } from "../worker/protocol";
-import type { PlayerSnap, KillMsg, Standing, Vec3 } from "../worker/protocol";
+import { MAX_HP, MAX_ARMOR, SPRING_DURATION_MS, ST_DEAD, CHAT_HISTORY, CHAT_MAX_LEN } from "../worker/protocol";
+import type { PlayerSnap, KillMsg, ChatMsg, Standing, Vec3 } from "../worker/protocol";
 import { countdownText, deathMessage } from "./death-ui";
 import { formatClock } from "./match-ui";
 import { playerColor } from "./colors";
@@ -56,6 +56,20 @@ export function sortScoreboard(players: PlayerSnap[]): PlayerSnap[] {
  */
 export function pruneKillFeed(entries: KillFeedEntry[], now: number): KillFeedEntry[] {
   return entries.filter((e) => now - e.at < KILL_FEED_TTL_MS);
+}
+
+export interface ChatEntry {
+  name: string; // sender name (server-authoritative)
+  body: string; // message text (already server-sanitized)
+}
+
+/**
+ * Pure (issue #10): append a chat entry to the log, keeping only the most recent `max`.
+ * Returns a NEW array (older messages scroll away once the cap is exceeded).
+ */
+export function pushChat(log: ChatEntry[], entry: ChatEntry, max: number = CHAT_HISTORY): ChatEntry[] {
+  const next = log.concat(entry);
+  return next.length > max ? next.slice(next.length - max) : next;
 }
 
 /**
@@ -167,6 +181,17 @@ export class Hud {
   private minimapCtx!: CanvasRenderingContext2D | null;
   private minimapVisible = true;
   private minimapMode: MinimapMode = "north";
+
+  // Text chat (issue #10): a fading log panel (bottom-left) + a `T`-activated input. The input is
+  // pointer-unlock–safe — opening it temporarily releases pointer lock, and the host re-locks via
+  // the onChatOpen callback after the message is sent / cancelled.
+  private chatLogEl!: HTMLDivElement;
+  private chatInputWrap!: HTMLDivElement;
+  private chatInput!: HTMLInputElement;
+  private chatLog: ChatEntry[] = [];
+  private chatOpen = false;
+  private onChatSendCb?: (body: string) => void;        // host sends the ChatMsg
+  private onChatOpenCb?: (open: boolean) => void;        // host pauses/restores pointer lock
 
   constructor(parent: HTMLElement = document.body) {
     const root = document.createElement("div");
@@ -409,6 +434,36 @@ export class Hud {
     this.minimapWrap = mmWrap;
     this.minimapCanvas = mmCanvas;
     this.minimapCtx = mmCanvas.getContext("2d");
+
+    // Chat log (bottom-left, above the spring meter / health stack; semi-transparent, fades).
+    // Shows the last CHAT_HISTORY messages; older lines scroll off the top (see pushChat).
+    const chatLog = document.createElement("div");
+    chatLog.style.cssText =
+      "position:absolute;left:18px;bottom:118px;width:340px;max-height:170px;overflow:hidden;" +
+      "display:flex;flex-direction:column;justify-content:flex-end;gap:2px;" +
+      "color:#e6ecf5;font:13px monospace;text-shadow:0 1px 2px #000;pointer-events:none;";
+    root.appendChild(chatLog);
+    this.chatLogEl = chatLog;
+
+    // Chat input (hidden until `T`). A real <input> so the OS IME / text editing works; it must
+    // accept pointer events even though the rest of the HUD doesn't.
+    const chatWrap = document.createElement("div");
+    chatWrap.style.cssText =
+      "position:absolute;left:18px;bottom:90px;width:340px;display:none;pointer-events:auto;" +
+      "background:rgba(8,12,20,.75);border:1px solid rgba(255,255,255,.3);border-radius:4px;";
+    const chatInput = document.createElement("input");
+    chatInput.maxLength = CHAT_MAX_LEN;
+    chatInput.placeholder = "Say something… (Enter to send, Esc to cancel)";
+    chatInput.style.cssText =
+      "width:100%;box-sizing:border-box;background:transparent;border:0;outline:none;" +
+      "color:#fff;font:13px monospace;padding:7px 9px;";
+    chatWrap.appendChild(chatInput);
+    root.appendChild(chatWrap);
+    this.chatInputWrap = chatWrap;
+    this.chatInput = chatInput;
+    // Keep chat key handling on the input itself so it never collides with the movement keymap
+    // (the global keydown to OPEN chat lives in onKeyDown below).
+    chatInput.addEventListener("keydown", this.onChatKey);
 
     // End-of-match results overlay (hidden until matchover). Interactive (Continue).
     // Body-level (NOT inside the z-index:10 HUD root) so it can sit ABOVE the lobby overlay.
@@ -657,6 +712,50 @@ export class Hud {
     this.killFeedEl.innerHTML = this.feed.map((e) => `<div>${escapeHtml(e.text)}</div>`).join("");
   }
 
+  /**
+   * Register the chat hooks (issue #10): `onSend(body)` ships the message to the server, and
+   * `onOpen(open)` lets the host pause pointer lock while typing and re-lock afterwards.
+   */
+  onChat(onSend: (body: string) => void, onOpen?: (open: boolean) => void): void {
+    this.onChatSendCb = onSend;
+    this.onChatOpenCb = onOpen;
+  }
+
+  /** True while the chat input is focused (the host suppresses fire/move so typing is safe). */
+  get chatInputActive(): boolean {
+    return this.chatOpen;
+  }
+
+  /** Append an incoming chat message to the log (last CHAT_HISTORY shown) and re-render. */
+  addChat(msg: ChatMsg): void {
+    this.chatLog = pushChat(this.chatLog, { name: msg.name, body: msg.body });
+    this.renderChat();
+  }
+
+  private renderChat(): void {
+    this.chatLogEl.innerHTML = this.chatLog
+      .map((e) => `<div><span style="color:#7cc5ff">${escapeHtml(e.name)}:</span> ${escapeHtml(e.body)}</div>`)
+      .join("");
+  }
+
+  /** Open the chat input (called on `T`). No-op if already open. */
+  openChat(): void {
+    if (this.chatOpen) return;
+    this.chatOpen = true;
+    this.chatInputWrap.style.display = "block";
+    this.chatInput.value = "";
+    this.chatInput.focus();
+    this.onChatOpenCb?.(true); // host releases pointer lock so typing doesn't move the camera
+  }
+
+  private closeChat(): void {
+    if (!this.chatOpen) return;
+    this.chatOpen = false;
+    this.chatInputWrap.style.display = "none";
+    this.chatInput.blur();
+    this.onChatOpenCb?.(false); // host may re-lock pointer
+  }
+
   /** Rebuild the scoreboard rows from the cached snapshot (only renders DOM when visible). */
   private renderScoreboard(): void {
     if (!this.scoreboardVisible) return;
@@ -758,6 +857,7 @@ export class Hud {
   dispose(): void {
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    this.chatInput.removeEventListener("keydown", this.onChatKey);
     if (this.hitMarkerTimer !== undefined) clearTimeout(this.hitMarkerTimer);
     if (this.rocketBannerTimer !== undefined) clearTimeout(this.rocketBannerTimer);
     if (this.dmgTimer !== undefined) clearTimeout(this.dmgTimer);
@@ -767,7 +867,30 @@ export class Hud {
     this.reconnectEl.remove();
   }
 
+  // Chat input key handling (issue #10): Enter sends + closes, Esc cancels + closes. Stop
+  // propagation so these keys never reach the global movement/HUD handlers while typing.
+  private onChatKey = (e: KeyboardEvent): void => {
+    if (e.code === "Enter") {
+      e.preventDefault();
+      const body = this.chatInput.value;
+      this.closeChat();
+      if (body.trim().length > 0) this.onChatSendCb?.(body); // server sanitizes + rate-limits
+    } else if (e.code === "Escape") {
+      e.preventDefault();
+      this.closeChat();
+    }
+    e.stopPropagation();
+  };
+
   private onKeyDown = (e: KeyboardEvent): void => {
+    // While the chat input is focused, swallow everything (its own listener handles Enter/Esc) so
+    // keystrokes don't leak into movement / minimap / scoreboard toggles.
+    if (this.chatOpen) return;
+    if (e.code === "KeyT") {                  // open the chat input (pointer-unlock–safe)
+      e.preventDefault();
+      this.openChat();
+      return;
+    }
     if (e.code === "KeyM") {                 // toggle minimap visibility
       this.minimapVisible = !this.minimapVisible;
       return;
