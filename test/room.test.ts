@@ -278,15 +278,20 @@ describe("GameRoom loopTick / idle / stop-on-empty", () => {
     // Put both players into a live match (they spawn ST_PROTECTED + become snap entities).
     await runInDurableObject(stub, (instance) => (instance as any).startMatch());
 
-    // Send one input from each so their lastSeq values differ.
+    // One input from each so their lastSeq values differ.
     const inA: InMsg = { t: "in", seq: 1290, ts: 1, p: [1, 1, 0], r: [0, 0], v: [0, 0, 0] };
     const inB: InMsg = { t: "in", seq: 44, ts: 1, p: [2, 1, 0], r: [0, 0], v: [0, 0, 0] };
-    a.send(JSON.stringify(inA));
-    b.send(JSON.stringify(inB));
 
-    // Drive exactly one tick deterministically, then read the snapshot off a.
+    // Drive exactly one tick deterministically. Inject the inputs in-process (rather than
+    // racing a WebSocket send against the tick) so the ack reliably reflects the processed
+    // seqs — a raw a.send() may not be delivered before loopTick() runs (flaky under CI).
     const snapPromise = nextMessage<SnapMsg>(a, ["snap"]);
-    await runInDurableObject(stub, (instance) => (instance as any).loopTick());
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.ingestInput(i.byId.get(welcomeA.id), inA);
+      i.ingestInput(i.byId.get(welcomeB.id), inB);
+      i.loopTick();
+    });
     const snap = await snapPromise;
 
     expect(snap.t).toBe("snap");

@@ -119,7 +119,7 @@ describe("sanitizeName", () => {
 
 describe("constants", () => {
   it("exposes SERVER_TICK_HZ", () => {
-    expect(SERVER_TICK_HZ).toBe(20);
+    expect(SERVER_TICK_HZ).toBe(64);
   });
 
   it("defines the rocket launcher weapon and grenade-resource bounds", () => {
