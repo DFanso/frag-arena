@@ -45,7 +45,7 @@ import { AmmoPickups, GrenadePickups, RocketPickups, HealthPickups, ArmorPickups
 import { Barrels } from "./barrels";
 import { Blood } from "./blood";
 import { Doors } from "./doors";
-import { Hud } from "./hud";
+import { Hud, damageDirectionAngle } from "./hud";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
 import { Viewmodel } from "./viewmodel";
@@ -433,6 +433,15 @@ async function main(): Promise<void> {
       hud.setHealth(m.hp);
       hud.flashDamage();      // red screen vignette
       controls.addShake(0.12);
+      // Directional indicator pointing at the attacker. Skip self-damage and attackers
+      // not in the latest snapshot (already dead / left → no position to aim at).
+      if (m.by !== myId) {
+        const attacker = latestSnap.find((p) => p.id === m.by);
+        if (attacker) {
+          const angle = damageDirectionAngle(controls.getPosition(), attacker.p, controls.getRotation()[0]);
+          hud.flashDamageDirection(angle);
+        }
+      }
     }
     if (m.by === myId) {
       hud.flashHitMarker();

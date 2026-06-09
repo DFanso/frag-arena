@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sortScoreboard, pruneKillFeed, KILL_FEED_TTL_MS, type KillFeedEntry } from "../src/hud";
+import { sortScoreboard, pruneKillFeed, damageDirectionAngle, KILL_FEED_TTL_MS, type KillFeedEntry } from "../src/hud";
 import type { PlayerSnap } from "../worker/protocol";
 
 function snap(id: number, name: string, frags: number, deaths: number): PlayerSnap {
@@ -31,6 +31,43 @@ describe("sortScoreboard", () => {
     const copy = input.slice();
     sortScoreboard(input);
     expect(input).toEqual(copy);
+  });
+});
+
+describe("damageDirectionAngle", () => {
+  // yaw=0 → camera looks down -Z (three.js default). Screen-relative bearing,
+  // clockwise-positive: 0=ahead (top), +90=right, ±180=behind (bottom), -90=left.
+  const close = (a: number, b: number) => expect(Math.abs(a - b)).toBeLessThan(1e-6);
+
+  it("returns 0 when the attacker is straight ahead", () => {
+    // looking -Z, attacker at -Z
+    close(damageDirectionAngle([0, 0, 0], [0, 0, -10], 0), 0);
+  });
+
+  it("returns 180 when the attacker is directly behind", () => {
+    close(Math.abs(damageDirectionAngle([0, 0, 0], [0, 0, 10], 0)), 180);
+  });
+
+  it("returns +90 when the attacker is to the right", () => {
+    // screen-right of a -Z-facing camera is +X
+    close(damageDirectionAngle([0, 0, 0], [10, 0, 0], 0), 90);
+  });
+
+  it("returns -90 when the attacker is to the left", () => {
+    close(damageDirectionAngle([0, 0, 0], [-10, 0, 0], 0), -90);
+  });
+
+  it("ignores the vertical (y) component", () => {
+    close(damageDirectionAngle([0, 0, 0], [0, 50, -10], 0), 0);
+  });
+
+  it("accounts for camera yaw (rotated to face -X)", () => {
+    // yaw=π/2 turns the camera to look down -X; an attacker at -X is now straight ahead
+    close(damageDirectionAngle([0, 0, 0], [-10, 0, 0], Math.PI / 2), 0);
+  });
+
+  it("is relative to the player position, not the world origin", () => {
+    close(damageDirectionAngle([5, 0, 5], [5, 0, -5], 0), 0); // attacker due -Z of the player
   });
 });
 
