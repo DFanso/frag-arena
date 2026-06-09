@@ -161,7 +161,7 @@ export interface Weapon {
 // tower pickup (see ROCKET_* above) and only usable while held — its ammo is tracked separately
 // (PlayerRec.rocketAmmo), not through the magazine/reserve system, and its blast uses ROCKET_*.
 export const WEAPONS: readonly Weapon[] = [
-  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 120, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.004 },
+  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 120, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.02 },
   { id: 1, name: "Sniper", damage: 90, headMult: 2, maxRange: 320, cooldownMs: 1100, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, zoomLevels: [1, 0.4, 0.2], auto: false, baseSpread: 0.001, sprayGrowth: 0.002 },
   { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, zoomLevels: [1, 0.92], auto: false, baseSpread: 0, sprayGrowth: 0 },
 ];
