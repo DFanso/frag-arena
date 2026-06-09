@@ -434,7 +434,7 @@ export class GameRoomCore {
       const targetId = visibleEnemy(rec.id, rec.p, rec.r[0], view, OCCLUDERS);
       if (targetId !== bs.targetId) { bs.targetId = targetId; bs.engagedAt = now; } // reaction resets on a new target
       const targetRec = targetId !== null ? this.byId.get(targetId) : undefined;
-      const move = botMove(bs, rec.p, targetRec ? targetRec.p : null, now, dt, Math.random);
+      const move = botMove(bs, rec.p, targetRec ? targetRec.p : null, now, dt, Math.random, OCCLUDERS);
       rec.p = move.p;
       rec.r = [move.yaw, 0];
       rec.v = move.v;

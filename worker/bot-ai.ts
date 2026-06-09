@@ -11,6 +11,7 @@ import {
   BOT_PREFERRED_RANGE,
   BOT_WANDER_INTERVAL_MS,
   BOT_BOUND,
+  BOT_RADIUS,
   BOT_VISION_RANGE,
   BOT_FOV_DOT,
   type Vec3,
@@ -166,6 +167,32 @@ function clampBound(n: number): number {
   return Math.max(-BOT_BOUND, Math.min(BOT_BOUND, n));
 }
 
+// Is (x,z) inside any occluder rect, expanded by the bot's body radius `margin`?
+function pointBlocked(x: number, z: number, occluders: readonly Rect[], margin: number): boolean {
+  for (const r of occluders) {
+    if (
+      x > r.x - r.w / 2 - margin && x < r.x + r.w / 2 + margin &&
+      z > r.z - r.d / 2 - margin && z < r.z + r.d / 2 + margin
+    ) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve a desired XZ move against the occluders so bots can't walk through structures. Tries the
+ * full move, then each axis alone (wall-sliding), then gives up and stays put. The structures are
+ * far taller than the bot, so this 2-D test matches gameplay. Pure.
+ */
+export function resolveMove(
+  fromX: number, fromZ: number, toX: number, toZ: number,
+  occluders: readonly Rect[], margin: number,
+): [number, number] {
+  if (!pointBlocked(toX, toZ, occluders, margin)) return [toX, toZ];
+  if (!pointBlocked(toX, fromZ, occluders, margin)) return [toX, fromZ]; // slide along X
+  if (!pointBlocked(fromX, toZ, occluders, margin)) return [fromX, toZ]; // slide along Z
+  return [fromX, fromZ]; // fully blocked — hold position
+}
+
 /**
  * Advance the bot one tick. With a target: face it and close to (or hold) BOT_PREFERRED_RANGE.
  * Without one: wander along a heading refreshed every BOT_WANDER_INTERVAL_MS. The result is clamped
@@ -178,6 +205,7 @@ export function botMove(
   now: number,
   dtSec: number,
   rand: () => number,
+  occluders: readonly Rect[] = [],
 ): BotMove {
   let moveYaw: number;  // direction of travel
   let faceYaw: number;  // direction the bot looks (faces the target while strafing/backing off)
@@ -205,10 +233,9 @@ export function botMove(
   const step = BOT_MOVE_SPEED * Math.max(0, dtSec);
   const vx = -Math.sin(moveYaw) * BOT_MOVE_SPEED;
   const vz = -Math.cos(moveYaw) * BOT_MOVE_SPEED;
-  const p: Vec3 = [
-    clampBound(selfPos[0] + -Math.sin(moveYaw) * step),
-    EYE_HEIGHT,
-    clampBound(selfPos[2] + -Math.cos(moveYaw) * step),
-  ];
-  return { p, yaw: faceYaw, v: [vx, 0, vz] };
+  const candX = clampBound(selfPos[0] - Math.sin(moveYaw) * step);
+  const candZ = clampBound(selfPos[2] - Math.cos(moveYaw) * step);
+  // Don't walk through buildings: resolve the candidate against the occluders (wall-slide / stop).
+  const [rx, rz] = resolveMove(selfPos[0], selfPos[2], candX, candZ, occluders, BOT_RADIUS);
+  return { p: [rx, EYE_HEIGHT, rz], yaw: faceYaw, v: [vx, 0, vz] };
 }

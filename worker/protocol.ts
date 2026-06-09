@@ -56,6 +56,7 @@ export const BOT_MOVE_SPEED = 6;                          // bot travel speed (u
 export const BOT_PREFERRED_RANGE = 28;                    // bots try to hold roughly this distance from a target
 export const BOT_WANDER_INTERVAL_MS = 2000;               // re-pick a wander heading this often when no target
 export const BOT_BOUND = 110;                             // soft arena bound bots stay within (walls are at ±120)
+export const BOT_RADIUS = 0.8;                            // bot body radius for structure collision (keeps them out of buildings)
 export const BOT_VISION_RANGE = 90;                       // a bot can only perceive targets within this distance
 export const BOT_FOV_DOT = Math.cos((70 * Math.PI) / 180); // 140° view cone: a target must be within ±70° of facing
 

@@ -7,6 +7,7 @@ import {
   hasLineOfSight,
   canSee,
   visibleEnemy,
+  resolveMove,
   newBotState,
   type Combatant,
   type BotState,
@@ -239,5 +240,39 @@ describe("visibleEnemy", () => {
   it("returns null when the only enemy is occluded", () => {
     const out = visibleEnemy(1, self, yaw, [combatant(2, [0, EYE_HEIGHT, 40])], [{ x: 0, z: 20, w: 8, d: 8 }]);
     expect(out).toBeNull();
+  });
+});
+
+describe("resolveMove (bot structure collision)", () => {
+  const wall: Rect = { x: 0, z: 10, w: 4, d: 4 }; // inflated by 0.8 → x[-2.8,2.8] z[7.2,12.8]
+  const m = 0.8;
+
+  it("returns the target when the path is clear", () => {
+    expect(resolveMove(0, 0, 0, 5, [wall], m)).toEqual([0, 5]);
+  });
+
+  it("never lands inside an occluder", () => {
+    const [x, z] = resolveMove(0, 7, 0, 8, [wall], m); // (0,8) is inside the inflated rect
+    const inside = x > -2.8 && x < 2.8 && z > 7.2 && z < 12.8;
+    expect(inside).toBe(false);
+  });
+
+  it("slides along a wall instead of stopping dead (free axis passes)", () => {
+    // moving +x parallel to the wall's face at z just below it: x advances, z stays clear.
+    expect(resolveMove(0, 5, 3, 5, [wall], m)).toEqual([3, 5]);
+  });
+});
+
+describe("botMove with occluders", () => {
+  const rand = lcg(3);
+  it("does not walk through a blocking structure", () => {
+    const occ: Rect[] = [{ x: 0, z: 10, w: 8, d: 8 }]; // inflated x[-4.8,4.8] z[5.2,14.8]
+    let pos: Vec3 = [0, EYE_HEIGHT, 0];
+    const st = newBotState();
+    const target: Vec3 = [0, EYE_HEIGHT, 50]; // far beyond the wall — the bot wants to cross it
+    for (let i = 0; i < 300; i++) pos = botMove(st, pos, target, i * 50, 0.05, rand, occ).p;
+    const inside = pos[0] > -4.8 && pos[0] < 4.8 && pos[2] > 5.2 && pos[2] < 14.8;
+    expect(inside).toBe(false);          // never ends up inside the structure
+    expect(pos[2]).toBeLessThan(6);      // stopped on the near side — did not tunnel through
   });
 });
