@@ -1,5 +1,28 @@
 // src/audio.ts — WebAudio SFX: lazily-created context + short synthesized blips, plus a few
-// decoded sample files (gunshot / reload) that play through the master gain.
+// decoded sample files (gunshot / reload / explosion) that play through the master gain.
+// Positional cues (remote gunfire) route through a PannerNode so distance attenuates the volume
+// and left/right placement gives a directional cue; the listener follows the camera.
+
+import type { Vec3 } from "../worker/protocol";
+
+// Positional-audio rolloff (PannerNode "inverse" model): full volume within REF_DISTANCE, then
+// 1/d falloff, fully inaudible beyond MAX_DISTANCE. Tuned to the arena scale (~ARENA_HALF units).
+export const PANNER_REF_DISTANCE = 6;   // world units within which a sound is at full volume
+export const PANNER_MAX_DISTANCE = 120; // beyond this the sound is effectively silent
+export const PANNER_ROLLOFF = 1.0;      // inverse-distance rolloff factor
+
+// Pure: the gain a PannerNode applies to a sound `dist` units from the listener under the
+// "inverse" distance model (clamped to [refDistance, maxDistance]). Exported for unit tests —
+// the live audio path lets the PannerNode do this same maths in C++.
+export function pannerGain(
+  dist: number,
+  refDistance: number = PANNER_REF_DISTANCE,
+  maxDistance: number = PANNER_MAX_DISTANCE,
+  rolloff: number = PANNER_ROLLOFF,
+): number {
+  const d = Math.max(refDistance, Math.min(maxDistance, Math.abs(dist)));
+  return refDistance / (refDistance + rolloff * (d - refDistance));
+}
 
 // Sample SFX served from /public/sfx. Each falls back to a synth blip until it's decoded.
 const SAMPLE_URLS: Record<string, string> = {
@@ -172,6 +195,104 @@ export class Sfx {
 
   pickup(): void {
     this.blip("square", 520, 920, 0.14, 0.05);
+  }
+
+  /** A short low-frequency footstep thud (local player; non-positional, at the listener). */
+  footstep(): void {
+    this.blip("sine", 150, 70, 0.10, 0.07);
+  }
+
+  /**
+   * Move the WebAudio listener to the camera each frame so positional cues (positionalBlip)
+   * attenuate + pan relative to where the local player is and which way they face. `forward` is
+   * the camera's look direction (need not be normalized). No-op until the context exists.
+   */
+  setListenerPosition(pos: Vec3, forward: Vec3): void {
+    if (this.ctx === undefined) return;
+    const lis = this.ctx.listener;
+    // Newer browsers expose AudioParams (positionX/forwardX); older WebKit uses setPosition/
+    // setOrientation. "up" stays world-up (0,1,0). setValueAtTime avoids glitches on ramp engines.
+    if (lis.positionX) {
+      const now = this.ctx.currentTime;
+      lis.positionX.setValueAtTime(pos[0], now);
+      lis.positionY.setValueAtTime(pos[1], now);
+      lis.positionZ.setValueAtTime(pos[2], now);
+      lis.forwardX.setValueAtTime(forward[0], now);
+      lis.forwardY.setValueAtTime(forward[1], now);
+      lis.forwardZ.setValueAtTime(forward[2], now);
+      lis.upX.setValueAtTime(0, now);
+      lis.upY.setValueAtTime(1, now);
+      lis.upZ.setValueAtTime(0, now);
+    } else {
+      const legacy = lis as unknown as {
+        setPosition(x: number, y: number, z: number): void;
+        setOrientation(fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void;
+      };
+      legacy.setPosition(pos[0], pos[1], pos[2]);
+      legacy.setOrientation(forward[0], forward[1], forward[2], 0, 1, 0);
+    }
+  }
+
+  /**
+   * Distant gunfire: a short blip placed at world position `at`, routed through a PannerNode so
+   * the browser attenuates it by distance and pans it left/right relative to the listener.
+   */
+  positionalShot(at: Vec3): void {
+    this.positionalBlip(at, "square", 360, 150, 0.5, 0.06);
+  }
+
+  /**
+   * Play one blip through a PannerNode positioned at world `at`. The PannerNode's inverse
+   * distance model (matching pannerGain above) does attenuation; HRTF/equal-power panning gives
+   * the directional cue. Falls back silently if the context isn't running.
+   */
+  private positionalBlip(
+    at: Vec3,
+    type: OscillatorType,
+    freqStart: number,
+    freqEnd: number,
+    gain: number,
+    dur: number,
+  ): void {
+    if (this.ctx === undefined || this.ctx.state !== "running") return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const panner = ctx.createPanner();
+    panner.panningModel = "equalpower"; // cheap pan (HRTF would be costlier); good L/R cue
+    panner.distanceModel = "inverse";
+    panner.refDistance = PANNER_REF_DISTANCE;
+    panner.maxDistance = PANNER_MAX_DISTANCE;
+    panner.rolloffFactor = PANNER_ROLLOFF;
+    if (panner.positionX) {
+      panner.positionX.setValueAtTime(at[0], now);
+      panner.positionY.setValueAtTime(at[1], now);
+      panner.positionZ.setValueAtTime(at[2], now);
+    } else {
+      (panner as unknown as { setPosition(x: number, y: number, z: number): void }).setPosition(at[0], at[1], at[2]);
+    }
+    const osc = ctx.createOscillator();
+    const env = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freqStart, now);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(1, freqEnd), now + dur);
+    env.gain.setValueAtTime(0.0001, now);
+    env.gain.exponentialRampToValueAtTime(gain, now + 0.005);
+    env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.connect(env);
+    env.connect(panner);
+    panner.connect(this.masterGain ?? ctx.destination);
+    osc.start(now);
+    osc.stop(now + dur + 0.02);
+  }
+
+  /** Suspend the audio context (e.g. when the tab is hidden) so no sound plays in the background. */
+  suspend(): void {
+    if (this.ctx !== undefined && this.ctx.state === "running") void this.ctx.suspend();
+  }
+
+  /** Resume the audio context when the tab is visible again (no-op before unlock()). */
+  resume(): void {
+    if (this.ctx !== undefined && this.ctx.state === "suspended") void this.ctx.resume();
   }
 
   /**

@@ -34,6 +34,34 @@ export const MAX_GROUND_SPEED = (MOVE_SPEED * SPRINT_MULT) / DAMPING_GROUND; // 
 export const ZIP_SPEED = 24;        // ride speed along a zipline (units/sec)
 const FEET_OFFSET = 0.35;           // capsule.start.y above the ground (feet)
 
+// ---- Footstep stride cadence (seconds between steps) ----
+export const STRIDE_WALK = 0.40;    // seconds per footstep at walk speed
+export const STRIDE_SPRINT = 0.28;  // faster cadence while sprinting
+export const STRIDE_CROUCH = 0.55;  // slower, quieter shuffle while crouched
+// Below this horizontal speed (units/sec) the player is effectively standing still — no steps.
+export const STEP_MIN_SPEED = 1.5;
+
+// Pure: seconds between footsteps for the current movement mode (crouch overrides sprint, since
+// you can't sprint while crouched — see canSprint in update()).
+export function strideInterval(sprinting: boolean, crouching: boolean): number {
+  if (crouching) return STRIDE_CROUCH;
+  return sprinting ? STRIDE_SPRINT : STRIDE_WALK;
+}
+
+// Pure: advance a footstep timer. Returns the new accumulator and how many steps fired this
+// frame (0 or 1 in practice; >1 only on a huge clamped delta). When not stepping (airborne or
+// near-stationary) the accumulator is held just below `interval` so the *next* real step lands
+// promptly rather than after a full stride.
+export function advanceStride(
+  acc: number, dt: number, speedXZ: number, grounded: boolean, interval: number,
+): { acc: number; steps: number } {
+  if (!grounded || speedXZ < STEP_MIN_SPEED) return { acc: Math.min(acc, interval), steps: 0 };
+  let a = acc + dt;
+  let steps = 0;
+  while (a >= interval) { a -= interval; steps++; }
+  return { acc: a, steps };
+}
+
 // Pure: acceleration factor for this frame. Airborne control is reduced; Shift sprints.
 export function moveAccel(onFloor: boolean, sprinting: boolean): number {
   return MOVE_SPEED * (onFloor ? 1 : 0.3) * (sprinting ? SPRINT_MULT : 1);
@@ -102,6 +130,8 @@ export class FpsControls {
   private onFallCb?: (dmg: number) => void;
   private doorOctree: Octree | null = null; // dynamic collision for closed doors
   private onUseCb?: (pos: Vec3) => void;     // E pressed on the ground (door / interact)
+  private onStepCb?: () => void;             // fired once per footstep while grounded + moving
+  private strideAcc = 0;                     // accumulated time toward the next footstep (sec)
 
   // scratch vectors (avoid per-frame allocation)
   private fwdDir = new THREE.Vector3();
@@ -168,6 +198,8 @@ export class FpsControls {
   addShake(amount: number): void { this.shakeAmt = Math.min(0.7, this.shakeAmt + amount); }
   // Register the fall-damage callback (main sends a FallMsg).
   onFall(cb: (dmg: number) => void): void { this.onFallCb = cb; }
+  // Register the footstep callback (main plays a step blip); fired on the stride timer.
+  onStep(cb: () => void): void { this.onStepCb = cb; }
 
   onLockChange(cb: (locked: boolean) => void): void { this.lockChangeCbs.push(cb); }
 
@@ -269,6 +301,14 @@ export class FpsControls {
       this.peakY = Math.max(this.peakY, y);
     }
     this.wasGrounded = fallGrounded;
+
+    // Footsteps: advance the stride timer from the post-collision horizontal speed and fire the
+    // callback once per stride while grounded + moving (cadence varies with sprint/crouch).
+    const speedXZ = Math.hypot(this.velocity.x, this.velocity.z);
+    const stride = strideInterval(canSprint, this.wantCrouch);
+    const adv = advanceStride(this.strideAcc, dt, speedXZ, fallGrounded, stride);
+    this.strideAcc = adv.acc;
+    for (let i = 0; i < adv.steps; i++) this.onStepCb?.();
 
     // Fell below the world (issue #23): the SERVER applies an out-of-bounds suicide + respawn
     // (worker/game-core ingestInput checks KZ_FLOOR). Don't silently teleport to center — that
