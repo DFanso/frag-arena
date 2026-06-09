@@ -14,11 +14,12 @@ const SAMPLE_URLS: Record<string, string> = {
   dryfire: "/sfx/freesound_community-empty-gun-shot-6209.mp3",
 };
 
-// Leading-edge debounce windows (ms): the first call plays, later calls are suppressed until a
-// quiet gap this long passes. Each call extends the window, so a sustained streak plays once.
-// Stops rapid/auto-fire events (landing hits, dry-firing an empty mag) from machine-gunning a clip.
+// hit: leading-edge DEBOUNCE — the first hit of a streak plays, and each later hit extends the
+// quiet window, so a sustained streak only ever plays once (until you stop hitting for this long).
 const HIT_DEBOUNCE_MS =  8000;
-const DRYFIRE_DEBOUNCE_MS = 700;
+// dry-fire: THROTTLE — holding fire on an empty mag should click at a steady rate (not once then
+// go silent), so this fires at most once per interval while the trigger is held.
+const DRYFIRE_THROTTLE_MS = 600;
 
 export class Sfx {
   private ctx: AudioContext | undefined;
@@ -118,13 +119,22 @@ export class Sfx {
     this.blip("square", 320, 140, 0.18, 0.05);
   }
 
-  // Leading-edge debounce: true on the first call, then false until `windowMs` of quiet. Each call
+  // Leading-edge debounce: true on the first call, then false until `windowMs` of quiet. EVERY call
   // (even a suppressed one) extends the window, so a sustained streak only passes once.
   private debounce(key: string, windowMs: number): boolean {
     const now = performance.now();
     const pass = now - (this.lastPlayed[key] ?? -Infinity) >= windowMs;
     this.lastPlayed[key] = now;
     return pass;
+  }
+
+  // Throttle: true at most once per `windowMs`. The timer advances ONLY when it passes, so a held
+  // stream of calls keeps firing at a steady rate (unlike debounce, which would play just once).
+  private throttle(key: string, windowMs: number): boolean {
+    const now = performance.now();
+    if (now - (this.lastPlayed[key] ?? -Infinity) < windowMs) return false;
+    this.lastPlayed[key] = now;
+    return true;
   }
 
   hit(): void {
@@ -152,7 +162,7 @@ export class Sfx {
   }
 
   dryFire(): void {
-    if (!this.debounce("dryfire", DRYFIRE_DEBOUNCE_MS)) return; // holding fire on an empty mag spams this — debounce it
+    if (!this.throttle("dryfire", DRYFIRE_THROTTLE_MS)) return; // steady click while held, not a spam
     if (!this.playSample("dryfire")) this.blip("square", 120, 90, 0.10, 0.04); // empty-gun click sample, else synth fallback
   }
 
