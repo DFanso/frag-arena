@@ -84,6 +84,7 @@ import {
   ROCKET_MAX_RANGE,
   ROCKET_TOWERS,
   CHAT_MIN_INTERVAL_MS,
+  POSITION_BUFFER_MS,
   decode,
   encode,
   sanitizeName,
@@ -127,7 +128,8 @@ import type {
   Weapon,
   HitZone,
 } from "./protocol";
-import { validateShoot, chooseSpawn, hitZone, zoneDamageMultiplier } from "./validate";
+import { validateShoot, chooseSpawn, hitZone, zoneDamageMultiplier, rewindTargetTime, posAtTime } from "./validate";
+import type { PosSample } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
 import { newBotState, visibleEnemy, botMove, botShouldFire, botHits, type BotState } from "./bot-ai";
 
@@ -166,6 +168,7 @@ interface PlayerRec {
   c: boolean;            // crouching
   pc: boolean;           // parachute deployed (echoed for remote rendering)
   bot?: BotState;        // present iff this is a server-driven AI bot (no real connection)
+  posHistory: PosSample[]; // lag-comp (issue #13): recent {ts,p} positions, oldest→newest, ~POSITION_BUFFER_MS deep
 }
 
 // A pending area-of-effect blast (grenade or rocket) awaiting detonation.
@@ -309,6 +312,7 @@ export class GameRoomCore {
     rec.armor = 0;                                    // armor is lost on death (grab a pickup again)
     rec.c = false;
     rec.pc = false;
+    rec.posHistory = [{ ts: now, p: [rec.p[0], rec.p[1], rec.p[2]] }]; // reset lag-comp history at the spawn point
     const msg: SpawnMsg = { t: "spawn", id: rec.id, p: rec.p, prot: SPAWN_PROTECTION_MS };
     this.broadcast(msg);
   }
@@ -357,6 +361,7 @@ export class GameRoomCore {
       armor: 0,
       c: false,
       pc: false,
+      posHistory: [],
     };
 
     // Welcome carries the snapshots of players already IN THE MATCH (so a late joiner can
@@ -429,7 +434,7 @@ export class GameRoomCore {
       reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
       reloadEndsAt: WEAPONS.map(() => 0),
       lastGrenadeAt: 0, grenades: 0, hasRocket: false, rocketAmmo: 0, armor: 0,
-      c: false, pc: false, lastChatAt: 0, bot: newBotState(),
+      c: false, pc: false, lastChatAt: 0, posHistory: [], bot: newBotState(),
     };
     this.players.set(conn, rec);
     this.byId.set(id, rec);
@@ -609,6 +614,13 @@ export class GameRoomCore {
     rec.lastInputAt = now;
     rec.lastSeq = m.seq;
 
+    // Lag compensation (issue #13): record the accepted position with the TRUSTED server time so
+    // handleShoot can rewind a target to where it actually was at the shooter's perceived fire
+    // moment. Drop entries older than POSITION_BUFFER_MS so the ring-buffer stays bounded.
+    rec.posHistory.push({ ts: now, p: [rec.p[0], rec.p[1], rec.p[2]] });
+    const cutoff = now - POSITION_BUFFER_MS;
+    while (rec.posHistory.length > 0 && rec.posHistory[0]!.ts < cutoff) rec.posHistory.shift();
+
     // Out-of-bounds kill floor (issue #23): falling below the world is an instant suicide (no
     // frag credit), so it can't be used to silently escape a fight. The normal death + respawn
     // flow then repositions the player. Authoritative here — the client only stops the fall; it
@@ -644,11 +656,19 @@ export class GameRoomCore {
       rec.protectedUntil = 0;
     }
 
-    // Combat validates against CURRENT server-authoritative positions (no lag-comp
-    // rewind in v1, per contract D4).
+    // Lag compensation (issue #13): rewind the target to where it was at the shooter's perceived
+    // fire moment instead of its current position, so shots that looked on-target on-screen (one
+    // RTT + the interpolation delay ago) are accepted. The rewind is clamped to
+    // LAGCOMP_MAX_REWIND_MS, and falls back to the current position when there is no history
+    // (a target that never moved this match) — neither path widens the anti-cheat envelope.
+    const targetPos = target === null
+      ? null
+      : posAtTime(target.posHistory, rewindTargetTime(now, m.ts)) ?? target.p;
+
+    // Combat validates against the rewound target position (current positions for the shooter).
     const reject = validateShoot(
       { p: rec.p, st: rec.st, lastShotAt: rec.lastShotAt },
-      target === null ? null : { p: target.p, st: target.st },
+      target === null ? null : { p: targetPos!, st: target.st },
       m.d,
       weapon,
       now,
@@ -670,9 +690,10 @@ export class GameRoomCore {
     // Fired, but the claimed hit was not valid (no/dead/protected target, range, aim).
     if (reject !== null || target === null) return;
 
-    // Per-limb zone is computed from geometry server-side (issue #29) — the client's `head` claim
-    // is ignored. Damage = base * zone multiplier (head uses the weapon's headMult).
-    const zone = hitZone(rec.p, target.p, m.d, target.c);
+    // Per-limb zone computed from geometry server-side (issue #29; supersedes the binary #17
+    // headshot), against the lag-comp REWOUND target position (issue #13) so the zone is where
+    // the shooter saw the target. The client's `head` claim is ignored.
+    const zone = hitZone(rec.p, targetPos!, m.d, target.c);
     const dmg = Math.round(weapon.damage * zoneDamageMultiplier(zone, weapon));
     this.applyDamage(target, dmg, rec, zone === ZONE_HEAD, false, zone);
   }

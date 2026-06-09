@@ -8,6 +8,8 @@ import {
   CROUCH_EYE_HEIGHT,
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
+  INTERP_DELAY_MS,
+  LAGCOMP_MAX_REWIND_MS,
   ST_ALIVE,
   ZONE_LEGS,
   ZONE_STOMACH,
@@ -162,4 +164,48 @@ export function chooseSpawn(spawnPoints: Vec3[], enemies: Vec3[], rand: () => nu
     }
   }
   return best[Math.floor(rand() * best.length)] ?? best[0]!;
+}
+
+// ---- lag compensation (issue #13) ----
+// A single recorded position with the SERVER wall-clock time it was accepted at.
+export interface PosSample {
+  ts: number;
+  p: Vec3;
+}
+
+// The server-clock instant a shot should be rewound to when validating it. `now` is when the
+// server received the shoot; `clientTs` is the shooter's claimed fire time (ShootMsg.ts). The
+// shooter perceived the world (a) one trip-time behind real time and (b) a further INTERP_DELAY_MS
+// behind because remote players are rendered interpolated in the past — so we sample the target
+// `(now - clientTs) + INTERP_DELAY_MS` ago. That total is ALWAYS clamped to [0, maxRewindMs] so a
+// spoofed clientTs (huge, negative, or in the future) can never rewind further than the cap nor
+// peek into the future. clientTs is treated in the server clock domain (client + server epoch
+// clocks are ~synced via the snap ts the client mirrors); the clamp bounds any residual skew.
+export function rewindTargetTime(
+  now: number,
+  clientTs: number,
+  interpDelayMs: number = INTERP_DELAY_MS,
+  maxRewindMs: number = LAGCOMP_MAX_REWIND_MS,
+): number {
+  const rewind = Math.max(0, Math.min(maxRewindMs, now - clientTs + interpDelayMs));
+  return now - rewind;
+}
+
+// The recorded position closest in time to `t` from a player's position history (the ring-buffer
+// pushed in ingestInput, oldest→newest). Returns null when there is no history (the caller then
+// falls back to the target's current position — i.e. no rewind). Linear scan: the buffer holds at
+// most POSITION_BUFFER_MS worth of entries (~64/sec ⇒ a few dozen), so this is cheap.
+export function posAtTime(history: readonly PosSample[], t: number): Vec3 | null {
+  if (history.length === 0) return null;
+  let best = history[0]!;
+  let bestDelta = Math.abs(best.ts - t);
+  for (let i = 1; i < history.length; i++) {
+    const s = history[i]!;
+    const d = Math.abs(s.ts - t);
+    if (d < bestDelta) {
+      best = s;
+      bestDelta = d;
+    }
+  }
+  return best.p;
 }

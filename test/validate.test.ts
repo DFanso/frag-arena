@@ -9,8 +9,11 @@ import {
   isHeadshot,
   hitZone,
   zoneDamageMultiplier,
+  rewindTargetTime,
+  posAtTime,
   type ShooterView,
   type TargetView,
+  type PosSample,
 } from "../worker/validate";
 import {
   WEAPONS,
@@ -21,6 +24,8 @@ import {
   ZONE_CHEST,
   ZONE_STOMACH,
   ZONE_LEGS,
+  INTERP_DELAY_MS,
+  LAGCOMP_MAX_REWIND_MS,
   ST_ALIVE,
   ST_DEAD,
   ST_PROTECTED,
@@ -293,5 +298,60 @@ describe("zoneDamageMultiplier (CS-style per-zone scaling, issue #29)", () => {
     expect(d(ZONE_HEAD)).toBeGreaterThan(d(ZONE_STOMACH));
     expect(d(ZONE_STOMACH)).toBeGreaterThan(d(ZONE_CHEST));
     expect(d(ZONE_CHEST)).toBeGreaterThan(d(ZONE_LEGS));
+  });
+});
+
+describe("rewindTargetTime (lag compensation, issue #13)", () => {
+  const NOW = 1_000_000;
+
+  it("with zero net+interp delay samples the present (no rewind)", () => {
+    // clientTs === now and interp=0 => rewind 0 => returns now.
+    expect(rewindTargetTime(NOW, NOW, 0)).toBe(NOW);
+  });
+
+  it("rewinds by (now - clientTs) + interpDelay", () => {
+    // 200ms one-way + 50ms interp => sample 250ms in the past.
+    expect(rewindTargetTime(NOW, NOW - 200, 50)).toBe(NOW - 250);
+  });
+
+  it("clamps the rewind to maxRewindMs even for a huge claimed delay", () => {
+    // A 5s-old (or spoofed) clientTs cannot rewind further than the cap.
+    expect(rewindTargetTime(NOW, NOW - 5000, 0, LAGCOMP_MAX_REWIND_MS)).toBe(
+      NOW - LAGCOMP_MAX_REWIND_MS,
+    );
+  });
+
+  it("never rewinds into the future for a clientTs ahead of the server clock", () => {
+    // clientTs in the future would make (now - clientTs) negative; clamp at >= 0 (interp 0).
+    expect(rewindTargetTime(NOW, NOW + 10_000, 0)).toBe(NOW);
+  });
+
+  it("defaults to INTERP_DELAY_MS and LAGCOMP_MAX_REWIND_MS", () => {
+    // Default interp folds in; default cap clamps an over-large delay.
+    expect(rewindTargetTime(NOW, NOW)).toBe(NOW - INTERP_DELAY_MS);
+    expect(rewindTargetTime(NOW, NOW - 10_000)).toBe(NOW - LAGCOMP_MAX_REWIND_MS);
+  });
+});
+
+describe("posAtTime (lag-comp position lookup, issue #13)", () => {
+  const hist: PosSample[] = [
+    { ts: 100, p: [0, 1, 0] },
+    { ts: 200, p: [1, 1, 0] },
+    { ts: 300, p: [2, 1, 0] },
+  ];
+
+  it("returns null for empty history (caller falls back to the current position)", () => {
+    expect(posAtTime([], 250)).toBeNull();
+  });
+
+  it("returns the entry closest in time to t", () => {
+    expect(posAtTime(hist, 180)).toEqual([1, 1, 0]); // nearest 200
+    expect(posAtTime(hist, 110)).toEqual([0, 1, 0]); // nearest 100
+    expect(posAtTime(hist, 290)).toEqual([2, 1, 0]); // nearest 300
+  });
+
+  it("clamps to the oldest/newest sample for out-of-range t", () => {
+    expect(posAtTime(hist, -1000)).toEqual([0, 1, 0]); // before history => oldest
+    expect(posAtTime(hist, 99_999)).toEqual([2, 1, 0]); // after history => newest
   });
 });
