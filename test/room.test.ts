@@ -45,6 +45,7 @@ import type {
   WelcomeMsg,
   LeaveMsg,
   ServerMsg,
+  PongMsg,
   InMsg,
   Vec3,
   Rot,
@@ -1499,6 +1500,20 @@ describe("GameRoom reconnect identity", () => {
     expect(w.rejoin).toBe(false);
     expect(typeof w.token).toBe("string");
     expect(w.token.length).toBeGreaterThan(0);
+    a.close();
+  });
+});
+
+// ---- ping / latency (issue #18) ----
+describe("GameRoom ping", () => {
+  it("echoes a pong with the same client timestamp", async () => {
+    const stub = roomStub("ping-echo");
+    const a = await connect(stub, "p");
+    await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    a.send(JSON.stringify({ t: "ping", ts: 1234567 }));
+    const pong = await nextMessage<PongMsg>(a, ["pong"]);
+    expect(pong.t).toBe("pong");
+    expect(pong.ts).toBe(1234567);
     a.close();
   });
 });

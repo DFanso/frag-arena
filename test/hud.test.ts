@@ -1,6 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { sortScoreboard, pruneKillFeed, damageDirectionAngle, minimapPoint, KILL_FEED_TTL_MS, type KillFeedEntry, type MinimapView } from "../src/hud";
+import { sortScoreboard, pruneKillFeed, damageDirectionAngle, minimapPoint, pingColor, KILL_FEED_TTL_MS, type KillFeedEntry, type MinimapView } from "../src/hud";
 import type { PlayerSnap } from "../worker/protocol";
+
+describe("pingColor", () => {
+  it("is green ≤80ms, yellow ≤150ms, red >150ms", () => {
+    expect(pingColor(0)).toBe("#4ade80");
+    expect(pingColor(80)).toBe("#4ade80");
+    expect(pingColor(81)).toBe("#fde047");
+    expect(pingColor(150)).toBe("#fde047");
+    expect(pingColor(151)).toBe("#f87171");
+    expect(pingColor(999)).toBe("#f87171");
+  });
+});
 
 function snap(id: number, name: string, frags: number, deaths: number): PlayerSnap {
   return { id, name, p: [0, 0, 0], r: [0, 0], v: [0, 0, 0], hp: 100, st: 1, frags, deaths };

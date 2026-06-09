@@ -8,6 +8,7 @@ export const INTERP_DELAY_MS = 45;                        // ~2x tick interval +
 export const MAX_PLAYERS_PER_ROOM = 12;
 export const IDLE_TIMEOUT_MS = 30_000;
 export const RECONNECT_GRACE_MS = 30_000; // a dropped player's identity (id/score/in-match) is restorable by token for this long
+export const PING_INTERVAL_MS = 1500;     // client ping cadence for the HUD latency readout
 export const MAX_MESSAGE_BYTES = 1024;                    // app-level cap (platform max is 32 MiB)
 export const RATE_LIMIT_MSGS_PER_SEC = 40;                // per connection
 export const RESPAWN_MS = 3000;
@@ -181,6 +182,7 @@ export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; 
 export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; barrel?: number | null; }
 export interface ReadyMsg { t: "ready"; ready: boolean; }
 export interface ReloadMsg { t: "reload"; w: number; }
+export interface PingMsg { t: "ping"; ts: number; }  // client clock at send; server echoes it back
 export interface ThrowMsg { t: "throw"; o: Vec3; d: Vec3; } // throw a grenade: origin + aim direction
 // Fire a rocket. The client (which has the map geometry) raycasts and sends the impact point
 // `p`; the server validates ownership/ammo/fire-rate, times the detonation, and applies AoE.
@@ -188,7 +190,7 @@ export interface RocketMsg { t: "rocket"; seq: number; ts: number; o: Vec3; d: V
 // Self-inflicted fall damage. The client detects a hard landing and claims the damage; the
 // server clamps it and applies it to the sender (movement/landing is client-authoritative).
 export interface FallMsg { t: "fall"; dmg: number; }
-export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | RocketMsg | FallMsg;
+export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | RocketMsg | FallMsg | PingMsg;
 
 // ---- Server -> Client ----
 // c = crouching, g = grenade count, a = armor, pc = parachute deployed.
@@ -215,7 +217,8 @@ export interface GrenadePickupMsg { t: "gpickup"; id: number; by: number; availa
 export interface HealthPickupMsg { t: "hpickup"; id: number; by: number; availableAt: number; } // health syringe taken
 export interface ArmorPickupMsg { t: "apickup"; id: number; by: number; availableAt: number; } // armor taken
 export interface SpringPickupMsg { t: "sppickup"; id: number; by: number; availableAt: number; durationMs: number; } // spring boots taken
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg;
+export interface PongMsg { t: "pong"; ts: number; } // echoes the client's PingMsg.ts for RTT
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg | PongMsg;
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }
 export function decode<T>(raw: string): T | null { try { return JSON.parse(raw) as T; } catch { return null; } }

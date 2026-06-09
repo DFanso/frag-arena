@@ -2,6 +2,7 @@
 import {
   encode,
   decode,
+  PING_INTERVAL_MS,
   type ClientMsg,
   type ServerMsg,
 } from "../worker/protocol";
@@ -15,6 +16,7 @@ export class Net {
   private handlers = new Map<string, Handler[]>();
   private attempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private pingTimer: ReturnType<typeof setInterval> | undefined;
   private closed = false;
   private room: string;
   private name: string;
@@ -64,6 +66,7 @@ export class Net {
   // Permanently close: stop reconnecting and shut the socket.
   close(): void {
     this.closed = true;
+    this.stopPing();
     if (this.reconnectTimer !== undefined) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
@@ -79,6 +82,17 @@ export class Net {
     if (list) for (const h of list) h(payload);
   }
 
+  // Periodic app-level ping so the HUD has a latency sample in any phase (lobby + match).
+  private startPing(): void {
+    this.stopPing();
+    this.pingTimer = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) this.send({ t: "ping", ts: Date.now() });
+    }, PING_INTERVAL_MS);
+  }
+  private stopPing(): void {
+    if (this.pingTimer !== undefined) { clearInterval(this.pingTimer); this.pingTimer = undefined; }
+  }
+
   private open(): void {
     this.url = this.buildUrl();
     this.ws = new WebSocket(this.url);
@@ -86,20 +100,25 @@ export class Net {
     this.ws.addEventListener("open", () => {
       this.attempt = 0;
       this.emit("open", undefined);
+      this.send({ t: "ping", ts: Date.now() }); // immediate first latency sample
+      this.startPing();
     });
 
     this.ws.addEventListener("message", (ev: MessageEvent) => {
       const raw = typeof ev.data === "string" ? ev.data : "";
       const msg = decode<ServerMsg>(raw);
       if (msg && typeof (msg as { t?: unknown }).t === "string") {
-        const m = msg as { t: string; token?: string };
+        const m = msg as { t: string; token?: string; ts?: number };
         // Persist the session token from the welcome so reconnects restore identity.
         if (m.t === "welcome" && typeof m.token === "string") this.saveToken(m.token);
+        // Pong → round-trip latency (clock-skew-free: both stamps are from our clock).
+        if (m.t === "pong" && typeof m.ts === "number") { this.emit("rtt", Date.now() - m.ts); return; }
         this.emit(m.t, msg);
       }
     });
 
     this.ws.addEventListener("close", () => {
+      this.stopPing();
       this.emit("close", undefined);
       this.ws = null;
       if (!this.closed) this.scheduleReconnect();

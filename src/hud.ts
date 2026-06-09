@@ -98,6 +98,11 @@ export function minimapPoint(wx: number, wz: number, view: MinimapView): { x: nu
   return { x: center + ox, y: center + oy, clamped };
 }
 
+/** Pure: ping color by latency — green ≤ 80 ms, yellow ≤ 150 ms, red > 150 ms. */
+export function pingColor(ms: number): string {
+  return ms <= 80 ? "#4ade80" : ms <= 150 ? "#fde047" : "#f87171";
+}
+
 export class Hud {
   private root: HTMLDivElement;
   private healthFill: HTMLDivElement;
@@ -118,6 +123,8 @@ export class Hud {
   private rocketBannerEl: HTMLDivElement;
   private rocketBannerTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectEl!: HTMLDivElement;
+  private pingEl!: HTMLDivElement;
+  private pingSamples: number[] = []; // rolling RTT samples (smoothed for display)
   private scopeEl: HTMLDivElement;
   private prompt: HTMLDivElement;
   private hitMarker: HTMLDivElement;
@@ -288,6 +295,15 @@ export class Hud {
       "text-shadow:0 2px 6px #000;background:rgba(0,0,0,.6);padding:10px 24px;border-radius:8px;z-index:60;";
     parent.appendChild(reconnect);
     this.reconnectEl = reconnect;
+
+    // Ping readout — top-right corner, on the body so it shows over the lobby overlay too.
+    const ping = document.createElement("div");
+    ping.textContent = "ping: –";
+    ping.style.cssText =
+      "position:fixed;right:10px;top:8px;font:700 13px monospace;color:#4ade80;" +
+      "text-shadow:0 1px 2px #000;z-index:30;pointer-events:none;";
+    parent.appendChild(ping);
+    this.pingEl = ping;
 
     // Sniper scope overlay (hidden until ADS with a scoped weapon). Clear center circle,
     // dark surround, thin reticle lines; the normal crosshair shows through the center.
@@ -691,6 +707,15 @@ export class Hud {
     this.reconnectEl.style.display = "none";
   }
 
+  /** Record a round-trip latency sample; displays a 10-sample rolling average, color-coded. */
+  setPing(ms: number): void {
+    this.pingSamples.push(ms);
+    if (this.pingSamples.length > 10) this.pingSamples.shift();
+    const avg = Math.round(this.pingSamples.reduce((a, b) => a + b, 0) / this.pingSamples.length);
+    this.pingEl.textContent = `ping: ${avg}ms`;
+    this.pingEl.style.color = pingColor(avg);
+  }
+
   /** Detach listeners and remove the overlay (for teardown/tests). */
   dispose(): void {
     window.removeEventListener("keydown", this.onKeyDown);
@@ -702,6 +727,7 @@ export class Hud {
     this.root.remove();
     this.resultsEl.remove();
     this.reconnectEl.remove();
+    this.pingEl.remove();
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {

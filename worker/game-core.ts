@@ -87,6 +87,7 @@ import type {
   LeaveMsg,
   SnapMsg,
   ClientMsg,
+  PongMsg,
   InMsg,
   ShootMsg,
   HitMsg,
@@ -216,6 +217,10 @@ export class GameRoomCore {
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
     const msg = decode<ClientMsg>(text);
     if (!msg) return;
+    if (msg.t === "ping") {
+      this.send(conn, { t: "pong", ts: msg.ts } satisfies PongMsg); // echo for the HUD ping readout
+      return;
+    }
     if (msg.t === "in") {
       if (rec.inMatch) this.ingestInput(rec, msg); // lobby players send no input
       return;

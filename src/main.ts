@@ -421,6 +421,7 @@ async function main(): Promise<void> {
   // Reconnect feedback: show a banner the moment the socket drops, hide it once it reopens.
   net.on("close", () => hud.showReconnecting());
   net.on("open", () => hud.hideReconnecting());
+  net.on("rtt", (ms: number) => hud.setPing(ms));
 
   net.on("lobby", (m: LobbyMsg) => {
     lobby.render(m.players, myId, m.matchActive);
