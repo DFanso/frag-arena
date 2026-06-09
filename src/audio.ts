@@ -9,6 +9,7 @@ const SAMPLE_URLS: Record<string, string> = {
   reload_end: "/sfx/reload_end.mp3",
   explosion: "/sfx/flutie8211-bomb-and-echo-2-540400.mp3",
   mortar: "/sfx/freesound_community-grenade-launcher-106342.mp3",
+  outro: "/sfx/outro.mp3",
 };
 
 export class Sfx {
@@ -17,6 +18,7 @@ export class Sfx {
   private volume = 1;                        // desired 0..1 (applied once the ctx/gain exist)
   private samples: Partial<Record<string, AudioBuffer>> = {}; // decoded SFX, keyed by SAMPLE_URLS name
   private samplesLoading = false;
+  private musicSrc: AudioBufferSourceNode | undefined; // the one playing music track (outro), so it can be stopped
 
   /**
    * Create (or resume) the AudioContext. MUST be called from a user gesture handler
@@ -61,6 +63,27 @@ export class Sfx {
     if (!buf || !this.ctx || this.ctx.state !== "running" || !this.masterGain) return false;
     this.playBuffer(buf, this.ctx.currentTime);
     return true;
+  }
+
+  // Play a one-off music track (e.g. the match-over outro) through the master gain. Stops any
+  // track already playing first, so it never layers. No-op if the sample isn't loaded yet.
+  playMusic(name: string): void {
+    const buf = this.samples[name];
+    if (!buf || !this.ctx || this.ctx.state !== "running" || !this.masterGain) return;
+    this.stopMusic();
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.masterGain);
+    src.onended = () => { if (this.musicSrc === src) this.musicSrc = undefined; };
+    src.start();
+    this.musicSrc = src;
+  }
+
+  /** Stop the current music track (if any) — e.g. when leaving the results screen / starting a match. */
+  stopMusic(): void {
+    if (!this.musicSrc) return;
+    try { this.musicSrc.stop(); } catch { /* already stopped */ }
+    this.musicSrc = undefined;
   }
 
   // Schedule a buffer to start at AudioContext time `when`, routed through the master gain.

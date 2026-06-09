@@ -611,6 +611,7 @@ async function main(): Promise<void> {
     matchEndsAt = m.endsAt;
     phase = "match";
     lobby.hide();
+    sfx.stopMusic(); // cut the outro if a new match starts
     hud.hideResults();
     hud.hideDeath();
     deadUntil = 0;
@@ -634,8 +635,9 @@ async function main(): Promise<void> {
     hud.hideDeath();
     controls.unlock(); // free the cursor for the lobby
     lobby.show();      // the lobby sits behind the results board (server also resent "lobby")
+    sfx.playMusic("outro"); // game-over outro song (stops on Continue / next match)
     // Results board on top; closing it reveals the lobby to ready up for the next match.
-    hud.showResults(m.standings, myId, () => hud.hideResults());
+    hud.showResults(m.standings, myId, () => { sfx.stopMusic(); hud.hideResults(); });
   });
 
   // ---- weapons (fire / reload / switch / ADS — single owner) ----------------
