@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { sortScoreboard, pruneKillFeed, damageDirectionAngle, minimapPoint, pingColor, pushPingSample, averagePing, crosshairGapPx, PING_SAMPLES, KILL_FEED_TTL_MS, type KillFeedEntry, type MinimapView } from "../src/hud";
+import { sortScoreboard, pruneKillFeed, pushChat, damageDirectionAngle, minimapPoint, pingColor, pushPingSample, averagePing, crosshairGapPx, PING_SAMPLES, KILL_FEED_TTL_MS, type KillFeedEntry, type ChatEntry, type MinimapView } from "../src/hud";
+import { CHAT_HISTORY } from "../worker/protocol";
 import type { PlayerSnap } from "../worker/protocol";
 
 function snap(id: number, name: string, frags: number, deaths: number): PlayerSnap {
@@ -149,6 +150,34 @@ describe("pruneKillFeed", () => {
     const input = [e(9000, "a"), e(1000, "b")];
     const copy = input.slice();
     pruneKillFeed(input, 10_000);
+    expect(input).toEqual(copy);
+  });
+});
+
+describe("pushChat (chat log rolling buffer, issue #10)", () => {
+  const e = (name: string, body: string): ChatEntry => ({ name, body });
+
+  it("appends to an empty log", () => {
+    expect(pushChat([], e("a", "hi"))).toEqual([e("a", "hi")]);
+  });
+
+  it("keeps only the last CHAT_HISTORY entries", () => {
+    let log: ChatEntry[] = [];
+    for (let i = 1; i <= CHAT_HISTORY + 4; i++) log = pushChat(log, e("p", `m${i}`));
+    expect(log.length).toBe(CHAT_HISTORY);
+    expect(log[0]!.body).toBe("m5");                       // first 4 scrolled off
+    expect(log[log.length - 1]!.body).toBe(`m${CHAT_HISTORY + 4}`); // newest retained
+  });
+
+  it("respects a custom max", () => {
+    const out = pushChat([e("a", "1"), e("b", "2"), e("c", "3")], e("d", "4"), 2);
+    expect(out.map((x) => x.body)).toEqual(["3", "4"]);
+  });
+
+  it("does not mutate the input array", () => {
+    const input = [e("a", "1")];
+    const copy = input.slice();
+    pushChat(input, e("b", "2"));
     expect(input).toEqual(copy);
   });
 });
