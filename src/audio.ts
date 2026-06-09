@@ -8,6 +8,7 @@ const SAMPLE_URLS: Record<string, string> = {
   reload_start: "/sfx/reload_start.mp3",
   reload_end: "/sfx/reload_end.mp3",
   explosion: "/sfx/flutie8211-bomb-and-echo-2-540400.mp3",
+  mortar: "/sfx/freesound_community-grenade-launcher-106342.mp3",
 };
 
 export class Sfx {

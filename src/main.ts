@@ -650,7 +650,8 @@ async function main(): Promise<void> {
     send: (m) => net.send(m),
     baseFov: camera.fov,
     onLocalShoot: (hit, weaponId) => {
-      sfx.shoot(weaponId === 1 ? "sniper" : "shoot"); // sniper (id 1) has its own fire+reload clip
+      // sniper (id 1) → its fire+reload clip; rocket launcher / "mortar" (id 2) → launcher thump; else machine-gun.
+      sfx.shoot(weaponId === 1 ? "sniper" : weaponId === 2 ? "mortar" : "shoot");
       viewmodel.recoil();
       viewmodel.flash();
       if (hit) hud.flashHitMarker();
