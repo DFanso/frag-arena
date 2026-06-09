@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { sortScoreboard, pruneKillFeed, pushChat, damageDirectionAngle, minimapPoint, pingColor, pushPingSample, averagePing, crosshairGapPx, PING_SAMPLES, KILL_FEED_TTL_MS, type KillFeedEntry, type ChatEntry, type MinimapView } from "../src/hud";
-import { CHAT_HISTORY } from "../worker/protocol";
+import { sortScoreboard, pruneKillFeed, pushChat, damageDirectionAngle, minimapPoint, pingColor, pushPingSample, averagePing, crosshairGapPx, formatCredits, buyOptions, PING_SAMPLES, KILL_FEED_TTL_MS, type KillFeedEntry, type ChatEntry, type MinimapView } from "../src/hud";
+import { CHAT_HISTORY, WEAPONS, CREDITS_CAP, defaultOwnedWeapons } from "../worker/protocol";
 import type { PlayerSnap } from "../worker/protocol";
 
 function snap(id: number, name: string, frags: number, deaths: number): PlayerSnap {
@@ -230,5 +230,47 @@ describe("crosshairGapPx (aim-spread crosshair, issue #20)", () => {
   });
   it("clamps negative spread to the base gap", () => {
     expect(crosshairGapPx(-1)).toBe(3);
+  });
+});
+
+describe("formatCredits (issue #25)", () => {
+  it("formats with a $ and thousands separators, floored and clamped at 0", () => {
+    expect(formatCredits(0)).toBe("$0");
+    expect(formatCredits(1250)).toBe("$1,250");
+    expect(formatCredits(1234.9)).toBe("$1,234");
+    expect(formatCredits(-5)).toBe("$0");
+  });
+});
+
+describe("buyOptions (buy menu, issue #26)", () => {
+  const buyable = WEAPONS.find((w) => w.buyable)!;
+
+  it("lists only the buyable weapons (excludes the free rifle + the rocket)", () => {
+    const opts = buyOptions(CREDITS_CAP, defaultOwnedWeapons());
+    expect(opts.length).toBe(WEAPONS.filter((w) => w.buyable).length);
+    expect(opts.every((o) => o.weapon.buyable)).toBe(true);
+    expect(opts.some((o) => o.weapon.name === "Rifle")).toBe(false);
+    expect(opts.some((o) => o.weapon.name === "Rocket")).toBe(false);
+  });
+
+  it("marks an affordable, unowned weapon as affordable and not owned", () => {
+    const [opt] = buyOptions(buyable.cost, defaultOwnedWeapons());
+    expect(opt!.weapon.id).toBe(buyable.id);
+    expect(opt!.owned).toBe(false);
+    expect(opt!.affordable).toBe(true);
+  });
+
+  it("marks a too-poor weapon as not affordable", () => {
+    const opt = buyOptions(buyable.cost - 1, defaultOwnedWeapons()).find((o) => o.weapon.id === buyable.id)!;
+    expect(opt.affordable).toBe(false);
+    expect(opt.owned).toBe(false);
+  });
+
+  it("marks an owned weapon as owned + not affordable (can't rebuy)", () => {
+    const owned = defaultOwnedWeapons();
+    owned[buyable.id] = true;
+    const opt = buyOptions(CREDITS_CAP, owned).find((o) => o.weapon.id === buyable.id)!;
+    expect(opt.owned).toBe(true);
+    expect(opt.affordable).toBe(false);
   });
 });
