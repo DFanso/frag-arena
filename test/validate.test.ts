@@ -7,6 +7,8 @@ import {
   validateShoot,
   clampMove,
   isHeadshot,
+  hitZone,
+  zoneDamageMultiplier,
   type ShooterView,
   type TargetView,
 } from "../worker/validate";
@@ -15,6 +17,10 @@ import {
   HIT_RADIUS,
   HEAD_THRESHOLD,
   EYE_HEIGHT,
+  ZONE_HEAD,
+  ZONE_CHEST,
+  ZONE_STOMACH,
+  ZONE_LEGS,
   ST_ALIVE,
   ST_DEAD,
   ST_PROTECTED,
@@ -227,5 +233,65 @@ describe("isHeadshot (server-authoritative head verification, issue #17)", () =>
 
   it("HEAD_THRESHOLD is shared with the client", () => {
     expect(HEAD_THRESHOLD).toBe(0.8);
+  });
+});
+
+describe("hitZone (server-computed per-limb damage zone, issue #29)", () => {
+  // Standing target: eye at y=1 (EYE_HEIGHT), feet at y=0. Shooter eye at y=1, target 10u ahead.
+  // A small downward slope dy/dz ≈ (h-1)/10 lands the ray at height h on the target's column.
+  const shooter: Vec3 = [0, EYE_HEIGHT, 0];
+  const target: Vec3 = [0, EYE_HEIGHT, 10];
+
+  it("classifies a level eye-to-eye shot as a head zone", () => {
+    expect(hitZone(shooter, target, [0, 0, 1], false)).toBe(ZONE_HEAD); // impact ~1.0 above feet
+  });
+
+  it("classifies an upper-body shot as the chest zone", () => {
+    expect(hitZone(shooter, target, [0, -0.03, 1], false)).toBe(ZONE_CHEST); // impact ~0.70
+  });
+
+  it("classifies a mid-body shot as the stomach zone", () => {
+    expect(hitZone(shooter, target, [0, -0.05, 1], false)).toBe(ZONE_STOMACH); // impact ~0.50
+  });
+
+  it("classifies a low shot as the legs zone", () => {
+    expect(hitZone(shooter, target, [0, -0.08, 1], false)).toBe(ZONE_LEGS); // impact ~0.20
+  });
+
+  it("agrees with isHeadshot for the head zone (no client trust)", () => {
+    const headDir: Vec3 = [0, 0, 1];
+    expect(hitZone(shooter, target, headDir, false) === ZONE_HEAD).toBe(
+      isHeadshot(shooter, target, headDir, false),
+    );
+    const legDir: Vec3 = [0, -0.08, 1];
+    expect(hitZone(shooter, target, legDir, false) === ZONE_HEAD).toBe(
+      isHeadshot(shooter, target, legDir, false),
+    );
+  });
+
+  it("uses the crouch eye height (a level shot on a crouched target is not a head)", () => {
+    // feet = 1 - 0.6 = 0.4; level impact at 1.0 is 0.6 above feet < 0.8 -> not head.
+    expect(hitZone(shooter, target, [0, 0, 1], true)).not.toBe(ZONE_HEAD);
+  });
+});
+
+describe("zoneDamageMultiplier (CS-style per-zone scaling, issue #29)", () => {
+  const rifle = WEAPONS[0]!;
+
+  it("uses the weapon's headMult for the head zone", () => {
+    expect(zoneDamageMultiplier(ZONE_HEAD, rifle)).toBe(rifle.headMult);
+  });
+
+  it("scales chest 1x, stomach 1.25x, legs 0.75x", () => {
+    expect(zoneDamageMultiplier(ZONE_CHEST, rifle)).toBe(1);
+    expect(zoneDamageMultiplier(ZONE_STOMACH, rifle)).toBe(1.25);
+    expect(zoneDamageMultiplier(ZONE_LEGS, rifle)).toBe(0.75);
+  });
+
+  it("orders damage head > stomach > chest > legs for a fixed base", () => {
+    const d = (z: 0 | 1 | 2 | 3) => rifle.damage * zoneDamageMultiplier(z, rifle);
+    expect(d(ZONE_HEAD)).toBeGreaterThan(d(ZONE_STOMACH));
+    expect(d(ZONE_STOMACH)).toBeGreaterThan(d(ZONE_CHEST));
+    expect(d(ZONE_CHEST)).toBeGreaterThan(d(ZONE_LEGS));
   });
 });
