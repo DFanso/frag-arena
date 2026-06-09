@@ -5,7 +5,12 @@ import {
   sanitizeRoom,
   sanitizeName,
   sanitizeChat,
+  addCredits,
   CHAT_MAX_LEN,
+  CREDITS_CAP,
+  STARTING_CREDITS,
+  CREDITS_PER_HIT,
+  CREDITS_PER_KILL,
   SERVER_TICK_HZ,
   WEAPONS,
   ROCKET_ID,
@@ -69,6 +74,7 @@ describe("encode/decode round-trip", () => {
           st: 1,
           frags: 3,
           deaths: 1,
+          credits: 1075, // issue #25: server-authoritative balance rides along in the snap
         },
       ],
     };
@@ -147,9 +153,33 @@ describe("ChatMsg round-trip (issue #10)", () => {
   });
 });
 
+describe("addCredits (issue #25)", () => {
+  it("adds an award onto the current balance", () => {
+    expect(addCredits(STARTING_CREDITS, CREDITS_PER_HIT)).toBe(STARTING_CREDITS + CREDITS_PER_HIT);
+    expect(addCredits(STARTING_CREDITS, CREDITS_PER_KILL)).toBe(STARTING_CREDITS + CREDITS_PER_KILL);
+  });
+  it("clamps the result up at CREDITS_CAP", () => {
+    expect(addCredits(CREDITS_CAP - 5, CREDITS_PER_KILL)).toBe(CREDITS_CAP);
+    expect(addCredits(CREDITS_CAP, 1)).toBe(CREDITS_CAP);
+  });
+  it("floors a negative result at 0", () => {
+    expect(addCredits(10, -50)).toBe(0);
+    expect(addCredits(0, -1)).toBe(0);
+  });
+  it("respects an explicit cap argument", () => {
+    expect(addCredits(90, 50, 100)).toBe(100);
+    expect(addCredits(40, 30, 100)).toBe(70);
+  });
+});
+
 describe("constants", () => {
   it("exposes SERVER_TICK_HZ", () => {
     expect(SERVER_TICK_HZ).toBe(64);
+  });
+
+  it("defines a sane credits economy (issue #25)", () => {
+    expect(CREDITS_PER_KILL).toBeGreaterThan(CREDITS_PER_HIT); // a kill is worth more than a hit
+    expect(STARTING_CREDITS).toBeLessThanOrEqual(CREDITS_CAP);
   });
 
   it("defines the rocket launcher weapon and grenade-resource bounds", () => {
