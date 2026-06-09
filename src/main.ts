@@ -615,7 +615,7 @@ async function main(): Promise<void> {
     baseFov: camera.fov,
     onLocalShoot: (hit) => {
       sfx.shoot();
-      viewmodel.recoil();
+      viewmodel.recoil(1 + (shootHandle?.getSpread() ?? 0) * 6); // kick scales with bloom (#20)
       viewmodel.flash();
       if (hit) hud.flashHitMarker();
     },
@@ -730,7 +730,8 @@ async function main(): Promise<void> {
     );
 
     // Auto-fire (hold-to-shoot for full-auto weapons) + viewmodel recoil/flash ease.
-    shootHandle?.update();
+    shootHandle?.update(dtMs);
+    hud.setCrosshairSpread(shootHandle?.getSpread() ?? 0); // bloom widens the crosshair gap (#20)
     viewmodel.update(dtMs);
 
     // Death countdown HUD update.
