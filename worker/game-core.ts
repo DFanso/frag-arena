@@ -18,6 +18,7 @@ import {
   ST_DEAD,
   SPAWN_POINTS,
   IDLE_TIMEOUT_MS,
+  RECONNECT_GRACE_MS,
   WEAPONS,
   RESPAWN_MS,
   SPAWN_PROTECTION_MS,
@@ -78,6 +79,7 @@ import {
   ROCKET_MAX_RANGE,
   ROCKET_TOWERS,
   CHAT_MIN_INTERVAL_MS,
+  POSITION_BUFFER_MS,
   decode,
   encode,
   sanitizeName,
@@ -120,11 +122,13 @@ import type {
   BoughtMsg,
   Weapon,
 } from "./protocol";
-import { validateShoot, chooseSpawn, isHeadshot } from "./validate";
+import { validateShoot, chooseSpawn, isHeadshot, rewindTargetTime, posAtTime } from "./validate";
+import type { PosSample } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
 
 interface PlayerRec {
   id: number;
+  token: string; // session token (sent in welcome; reconnect with it restores id/score/in-match)
   name: string;
   ws: Conn;
   p: Vec3;
@@ -156,6 +160,7 @@ interface PlayerRec {
   armor: number;         // armor points (soak damage before hp; 0..MAX_ARMOR)
   c: boolean;            // crouching
   pc: boolean;           // parachute deployed (echoed for remote rendering)
+  posHistory: PosSample[]; // lag-comp (issue #13): recent {ts,p} positions, oldest→newest, ~POSITION_BUFFER_MS deep
 }
 
 // A pending area-of-effect blast (grenade or rocket) awaiting detonation.
@@ -168,6 +173,9 @@ export class GameRoomCore {
   private players = new Map<Conn, PlayerRec>();
   private byId = new Map<number, PlayerRec>();
   private nextId = 1;
+  // Identity of recently-disconnected players, keyed by session token, so a reconnect within
+  // RECONNECT_GRACE_MS restores their id / score / in-match state instead of joining fresh.
+  private savedIdentities = new Map<string, { id: number; name: string; frags: number; deaths: number; inMatch: boolean; savedAt: number }>();
   private tick = 0;
   private tickHandle: ReturnType<typeof setInterval> | undefined;
   private matchEndsAt = 0;     // server epoch ms the current match ends (0 = no active match)
@@ -186,9 +194,9 @@ export class GameRoomCore {
 
   // Register a new connection. Returns false if the room is full (the caller should close the
   // socket); the socket is NEVER added to players/byId in that case.
-  public accept(conn: Conn, rawName: string | undefined): boolean {
+  public accept(conn: Conn, rawName: string | undefined, rawToken?: string): boolean {
     if (this.players.size >= MAX_PLAYERS_PER_ROOM) return false;
-    this.addPlayer(conn, sanitizeName(rawName));
+    this.addPlayer(conn, sanitizeName(rawName), rawToken);
     return true;
   }
 
@@ -293,15 +301,24 @@ export class GameRoomCore {
     rec.armor = 0;                                    // armor is lost on death (grab a pickup again)
     rec.c = false;
     rec.pc = false;
+    rec.posHistory = [{ ts: now, p: [rec.p[0], rec.p[1], rec.p[2]] }]; // reset lag-comp history at the spawn point
     const msg: SpawnMsg = { t: "spawn", id: rec.id, p: rec.p, prot: SPAWN_PROTECTION_MS };
     this.broadcast(msg);
   }
 
-  private addPlayer(ws: Conn, name: string): void {
-    const id = this.nextId++;
+  private addPlayer(ws: Conn, name: string, rawToken?: string): void {
     const now = Date.now();
+    this.pruneSavedIdentities(now);
+    // Reconnect: a matching, still-free saved token restores the player's identity + score.
+    const saved = rawToken ? this.savedIdentities.get(rawToken) : undefined;
+    const rejoin = saved !== undefined && !this.byId.has(saved.id);
+    const id = rejoin ? saved!.id : this.nextId++;
+    const token = rejoin ? rawToken! : this.newToken();
+    if (rejoin) this.savedIdentities.delete(rawToken!);
+    const resumeMatch = rejoin && saved!.inMatch && this.matchActive;
     const rec: PlayerRec = {
       id,
+      token,
       name,
       ws,
       p: [0, 0, 0] as Vec3, // will be set below after rec is created
@@ -310,8 +327,8 @@ export class GameRoomCore {
       v: [0, 0, 0],
       hp: MAX_HP,
       st: ST_ALIVE,
-      frags: 0,
-      deaths: 0,
+      frags: rejoin ? saved!.frags : 0,
+      deaths: rejoin ? saved!.deaths : 0,
       credits: STARTING_CREDITS, // reset again at startMatch; seeded here so a lobby snap is sane
       ownedWeapons: defaultOwnedWeapons(), // only the free Rifle until bought (issue #26)
       lastShotAt: 0,
@@ -321,7 +338,7 @@ export class GameRoomCore {
       lastSeq: 0,
       rate: { windowStart: now, count: 0 },
       ready: false,
-      inMatch: false,
+      inMatch: resumeMatch,
       ammo: WEAPONS.map((w) => w.clipSize),
       reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
       reloadEndsAt: WEAPONS.map(() => 0),
@@ -333,6 +350,7 @@ export class GameRoomCore {
       armor: 0,
       c: false,
       pc: false,
+      posHistory: [],
     };
 
     // Welcome carries the snapshots of players already IN THE MATCH (so a late joiner can
@@ -348,14 +366,30 @@ export class GameRoomCore {
     const welcome: WelcomeMsg = {
       t: "welcome",
       id,
+      token,
+      rejoin,
       tickRate: SERVER_TICK_HZ,
       players: existing,
       matchEndsAt: this.matchActive ? this.matchEndsAt : 0,
       fragLimit: FRAG_LIMIT,
     };
     this.send(ws, welcome);
+    // Rejoining an in-progress match: spawn straight back into the fight (broadcasts a SpawnMsg).
+    if (resumeMatch) this.spawn(rec);
     this.broadcastLobby();
     this.startLoop(); // keep the room resident (state in memory) while ≥1 player is connected
+  }
+
+  // A fresh session token. crypto.randomUUID is available in workerd, Node 18+, and browsers.
+  private newToken(): string {
+    return crypto.randomUUID();
+  }
+
+  // Drop saved identities whose reconnect grace window has elapsed.
+  private pruneSavedIdentities(now: number): void {
+    for (const [tok, s] of this.savedIdentities) {
+      if (now - s.savedAt > RECONNECT_GRACE_MS) this.savedIdentities.delete(tok);
+    }
   }
 
   // Toggle a player's ready state (lobby phase only) and start the match once ALL are ready.
@@ -430,6 +464,11 @@ export class GameRoomCore {
   public removePlayer(ws: Conn): void {
     const rec = this.players.get(ws);
     if (!rec) return;
+    // Preserve identity briefly so a reconnect with the same token restores id/score/in-match.
+    this.savedIdentities.set(rec.token, {
+      id: rec.id, name: rec.name, frags: rec.frags, deaths: rec.deaths,
+      inMatch: rec.inMatch, savedAt: Date.now(),
+    });
     this.players.delete(ws);
     this.byId.delete(rec.id);
     try {
@@ -473,6 +512,13 @@ export class GameRoomCore {
     rec.lastInputAt = now;
     rec.lastSeq = m.seq;
 
+    // Lag compensation (issue #13): record the accepted position with the TRUSTED server time so
+    // handleShoot can rewind a target to where it actually was at the shooter's perceived fire
+    // moment. Drop entries older than POSITION_BUFFER_MS so the ring-buffer stays bounded.
+    rec.posHistory.push({ ts: now, p: [rec.p[0], rec.p[1], rec.p[2]] });
+    const cutoff = now - POSITION_BUFFER_MS;
+    while (rec.posHistory.length > 0 && rec.posHistory[0]!.ts < cutoff) rec.posHistory.shift();
+
     // Out-of-bounds kill floor (issue #23): falling below the world is an instant suicide (no
     // frag credit), so it can't be used to silently escape a fight. The normal death + respawn
     // flow then repositions the player. Authoritative here — the client only stops the fall; it
@@ -508,11 +554,19 @@ export class GameRoomCore {
       rec.protectedUntil = 0;
     }
 
-    // Combat validates against CURRENT server-authoritative positions (no lag-comp
-    // rewind in v1, per contract D4).
+    // Lag compensation (issue #13): rewind the target to where it was at the shooter's perceived
+    // fire moment instead of its current position, so shots that looked on-target on-screen (one
+    // RTT + the interpolation delay ago) are accepted. The rewind is clamped to
+    // LAGCOMP_MAX_REWIND_MS, and falls back to the current position when there is no history
+    // (a target that never moved this match) — neither path widens the anti-cheat envelope.
+    const targetPos = target === null
+      ? null
+      : posAtTime(target.posHistory, rewindTargetTime(now, m.ts)) ?? target.p;
+
+    // Combat validates against the rewound target position (current positions for the shooter).
     const reject = validateShoot(
       { p: rec.p, st: rec.st, lastShotAt: rec.lastShotAt },
-      target === null ? null : { p: target.p, st: target.st },
+      target === null ? null : { p: targetPos!, st: target.st },
       m.d,
       weapon,
       now,
@@ -535,8 +589,10 @@ export class GameRoomCore {
     if (reject !== null || target === null) return;
 
     // Headshot is server-verified (issue #17): honor the client's `head` claim only when the
-    // aim ray actually crosses the target's head zone. A body/leg shot can no longer claim 2x.
-    const head = m.head && isHeadshot(rec.p, target.p, m.d, target.c);
+    // aim ray actually crosses the target's head zone. Uses the SAME rewound position as the
+    // hit validation (issue #13) so the head zone is where the shooter saw it. A body/leg shot
+    // can no longer claim 2x.
+    const head = m.head && isHeadshot(rec.p, targetPos!, m.d, target.c);
     const dmg = head ? weapon.damage * weapon.headMult : weapon.damage;
     this.applyDamage(target, dmg, rec, head);
   }

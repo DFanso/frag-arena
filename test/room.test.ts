@@ -73,8 +73,10 @@ function roomStub(roomName: string) {
 async function connect(
   stub: DurableObjectStub,
   name = "p",
+  token?: string,
 ): Promise<WebSocket> {
-  const url = "https://do/ws/test?name=" + encodeURIComponent(name);
+  let url = "https://do/ws/test?name=" + encodeURIComponent(name);
+  if (token) url += "&token=" + encodeURIComponent(token);
   const res = await stub.fetch(url, { headers: { Upgrade: "websocket" } });
   expect(res.status).toBe(101);
   const ws = res.webSocket;
@@ -202,6 +204,7 @@ function makeRecIngest(now: number, p: Vec3 = [0, 1, 0]) {
     ready: false,
     inMatch: true,
     c: false,
+    posHistory: [] as { ts: number; p: Vec3 }[],
   };
 }
 
@@ -444,6 +447,7 @@ function makeRec(
     armor: opts.armor ?? 0,
     c: false,
     pc: false,
+    posHistory: [] as { ts: number; p: Vec3 }[],
   };
 }
 
@@ -1895,6 +1899,190 @@ describe("GameRoom buy menu (issue #26)", () => {
       expect(rec.ownedWeapons[BUYABLE.id]).toBe(true);
       expect(rec.credits).toBe(0);
       expect(sent.some((m) => (m as { t?: string }).t === "bought")).toBe(true);
+    });
+  });
+});
+
+// ---- reconnection identity (issue #12) ----
+describe("GameRoom reconnect identity", () => {
+  it("restores id + score + in-match state on reconnect with the session token", async () => {
+    const stub = roomStub("reconnect-restore");
+    const a = await connect(stub, "alice");
+    const w1 = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    expect(w1.rejoin).toBe(false);
+    expect(typeof w1.token).toBe("string");
+    expect(w1.token.length).toBeGreaterThan(0);
+
+    // Put alice into a live match with a score, then simulate a disconnect (saves identity).
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.startMatch();
+      const rec = i.byId.get(w1.id);
+      rec.frags = 7;
+      rec.deaths = 2;
+      i.removePlayer(rec.ws);
+      expect(i.byId.has(w1.id)).toBe(false);
+    });
+
+    // Reconnect with the same token → same id, restored score, back in the match.
+    const a2 = await connect(stub, "alice", w1.token);
+    const w2 = await nextMessage<WelcomeMsg>(a2, ["welcome"]);
+    expect(w2.rejoin).toBe(true);
+    expect(w2.id).toBe(w1.id);
+    expect(w2.token).toBe(w1.token);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      const rec = i.byId.get(w1.id);
+      expect(rec.frags).toBe(7);
+      expect(rec.deaths).toBe(2);
+      expect(rec.inMatch).toBe(true);
+    });
+    a2.close();
+  });
+
+  it("joins fresh (rejoin=false) when the reconnect token is unknown", async () => {
+    const stub = roomStub("reconnect-unknown");
+    const a = await connect(stub, "bob", "not-a-real-token");
+    const w = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    expect(w.rejoin).toBe(false);
+    expect(typeof w.token).toBe("string");
+    expect(w.token.length).toBeGreaterThan(0);
+    a.close();
+  });
+});
+
+// ---- lag compensation (issue #13) ----
+describe("GameRoom lag compensation", () => {
+  it("ingestInput records the accepted position into posHistory and prunes the buffer", async () => {
+    const stub = env.ROOMS.getByName("lc-record");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const rec = makeRec(1, [0, 1, 0], { lastInputAt: Date.now() - 30 });
+      // Seed a stale entry older than POSITION_BUFFER_MS so the prune removes it.
+      rec.posHistory.push({ ts: Date.now() - 5000, p: [9, 1, 9] });
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+
+      inst.ingestInput(rec, { t: "in", seq: 1, ts: 0, p: [0.2, 1, 0], r: [0, 0], v: [0, 0, 0] });
+
+      // The stale entry was pruned; the freshly accepted position is the newest sample.
+      expect(rec.posHistory.some((s) => s.p[0] === 9)).toBe(false);
+      const last = rec.posHistory[rec.posHistory.length - 1]!;
+      expect(last.p).toEqual(rec.p); // mirrors the accepted (clamped) position
+      expect(typeof last.ts).toBe("number");
+    });
+  });
+
+  it("a shot with ~0ms delay validates against the target's CURRENT position", async () => {
+    const stub = env.ROOMS.getByName("lc-zero");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, 10]); // on the +z aim axis
+      target.posHistory = [{ ts: now, p: [0, 1, 10] }];
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      // ts === now ⇒ no meaningful rewind ⇒ hits the current on-axis position.
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+
+      expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage);
+    });
+  });
+
+  it("a ~200ms-delayed shot rewinds the target to where it was, accepting a now-off-axis hit", async () => {
+    const stub = env.ROOMS.getByName("lc-rewind");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      // Target was on the +z axis 200ms ago, but has since strafed far off-axis.
+      const target = makeRec(2, [20, 1, 10]); // CURRENT position misses a +z shot
+      target.posHistory = [
+        { ts: now - 200, p: [0, 1, 10] },   // where the shooter saw it
+        { ts: now, p: [20, 1, 10] },        // current
+      ];
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      // Fired 200ms ago (client time): rewind samples the on-axis [0,1,10] ⇒ the hit lands.
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now - 200, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+
+      expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage);
+    });
+  });
+
+  it("without lag-comp the same shot would miss (control): a now-position shot at the strafed target is rejected", async () => {
+    const stub = env.ROOMS.getByName("lc-control");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [20, 1, 10]); // off-axis now AND ts=now ⇒ no rewind
+      target.posHistory = [{ ts: now, p: [20, 1, 10] }];
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+
+      expect(target.hp).toBe(MAX_HP); // aim reject — the +z ray never reaches [20,1,10]
+    });
+  });
+
+  it("a >500ms-delayed shot is CLAMPED: it cannot rewind past LAGCOMP_MAX_REWIND_MS", async () => {
+    const stub = env.ROOMS.getByName("lc-clamp");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [20, 1, 10]);
+      // On-axis 700ms ago (beyond the 500ms cap), off-axis within the last 500ms.
+      target.posHistory = [
+        { ts: now - 700, p: [0, 1, 10] },   // outside the rewind cap ⇒ unreachable
+        { ts: now - 490, p: [20, 1, 10] },  // inside the cap ⇒ this is what gets sampled
+        { ts: now, p: [20, 1, 10] },
+      ];
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      // A spoofed/huge 5s delay must clamp to LAGCOMP_MAX_REWIND_MS ⇒ samples the off-axis
+      // [20,1,10] (the closest entry within the cap), so the +z shot is rejected (no peek 700ms back).
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now - 5000, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+
+      expect(target.hp).toBe(MAX_HP);
+    });
+  });
+
+  it("falls back to the current position when the target has no history (no rewind, still hits)", async () => {
+    const stub = env.ROOMS.getByName("lc-nohist");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, 10]); // empty posHistory (default)
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now - 300, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+
+      expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage); // current position used
     });
   });
 });
