@@ -12,6 +12,7 @@ import {
   SERVER_TICK_HZ,
   MAX_PLAYERS_PER_ROOM,
   MAX_HP,
+  KZ_FLOOR,
   ST_ALIVE,
   ST_PROTECTED,
   ST_DEAD,
@@ -444,6 +445,16 @@ export class GameRoomCore {
     rec.pc = !!m.pc;
     rec.lastInputAt = now;
     rec.lastSeq = m.seq;
+
+    // Out-of-bounds kill floor (issue #23): falling below the world is an instant suicide (no
+    // frag credit), so it can't be used to silently escape a fight. The normal death + respawn
+    // flow then repositions the player. Authoritative here — the client only stops the fall; it
+    // no longer teleports to center.
+    if (rec.p[1] < KZ_FLOOR && rec.st !== ST_DEAD) {
+      if (rec.st === ST_PROTECTED) { rec.st = ST_ALIVE; rec.protectedUntil = 0; }
+      rec.armor = 0; // ensure the fall is lethal regardless of armor
+      this.applyDamage(rec, MAX_HP, rec, false);
+    }
   }
 
   private handleShoot(rec: PlayerRec, m: ShootMsg): void {

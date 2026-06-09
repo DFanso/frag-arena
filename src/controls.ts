@@ -10,7 +10,7 @@ import { resolveCollision } from "./physics";
 import {
   EYE_HEIGHT, CROUCH_EYE_HEIGHT,
   PARACHUTE_FALL_SPEED, PARACHUTE_GLIDE_SPEED,
-  FALL_SAFE_DIST, FALL_DMG_PER_UNIT, SPRING_JUMP_MULT, ZIPLINES,
+  FALL_SAFE_DIST, FALL_DMG_PER_UNIT, SPRING_JUMP_MULT, ZIPLINES, KZ_FLOOR,
   type Vec3, type Rot,
 } from "../worker/protocol";
 import type { Ladder } from "./map";
@@ -253,8 +253,11 @@ export class FpsControls {
     }
     this.wasGrounded = fallGrounded;
 
-    // Fell out of the world: respawn at origin-ish.
-    if (this.collider.end.y < -25) this.setPosition([0, EYE_HEIGHT, 0]);
+    // Fell below the world (issue #23): the SERVER applies an out-of-bounds suicide + respawn
+    // (worker/game-core ingestInput checks KZ_FLOOR). Don't silently teleport to center — that
+    // hid the fall from the server and let players escape fights. Just stop falling here; the
+    // normal death/respawn flow repositions us (spawn -> controls.setPosition).
+    if (this.collider.end.y < KZ_FLOOR) this.velocity.set(0, 0, 0);
 
     this.syncCameraToCollider();
     this.applyShake(dt);
