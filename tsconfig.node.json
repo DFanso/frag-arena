@@ -1,0 +1,25 @@
+{
+  // Typecheck config for the Node self-host target (server/ + the shared core it bundles).
+  // Separate from the main tsconfig because this target uses @types/node (process, node:path,
+  // ws) instead of the Workers globals, and must NOT see the CF-only worker/room.ts +
+  // worker/index.ts (which reference cloudflare:workers / WebSocketPair / DurableObjectState).
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": [
+    "server",
+    "worker/game-core.ts",
+    "worker/protocol.ts",
+    "worker/validate.ts",
+    "worker/match.ts"
+  ]
+}

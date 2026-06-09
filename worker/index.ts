@@ -1,9 +1,12 @@
 import { Hono } from "hono";
-import type { GameRoom } from "./room";
 import { sanitizeRoom } from "./protocol";
 
 export interface Env {
-  ROOMS: DurableObjectNamespace<GameRoom>;
+  // Untyped namespace: GameRoom no longer `extends DurableObject` (its logic lives in the
+  // runtime-agnostic GameRoomCore), so it doesn't carry the RPC brand the generic param
+  // requires. We only ever call `.getByName(...).fetch(...)`, which the untyped namespace
+  // types fine; the binding still resolves by class name via the wrangler migration.
+  ROOMS: DurableObjectNamespace;
 }
 
 const app = new Hono<{ Bindings: Env }>();
