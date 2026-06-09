@@ -413,6 +413,11 @@ async function main(): Promise<void> {
   const net = new Net(room, name, bots);
   const lobby = makeLobby((ready: boolean) => net.send({ t: "ready", ready }));
 
+  // Round-trip latency (#18): record the wall-clock send time per input seq; the server echoes
+  // the last processed seq in snap.ack, so RTT = now - sentAt[ack]. (ack is a seq, not a clock —
+  // and client/server clocks are unsynced — so this is the only correct ping source.)
+  const pingSentAt = new Map<number, number>();
+
   net.on("welcome", (m: WelcomeMsg) => {
     myId = m.id;
     local = new LocalPlayer(myId);
@@ -457,6 +462,13 @@ async function main(): Promise<void> {
         hud.setHealth(ps.hp);
         hud.setGrenades(ps.g ?? 0);
         hud.setArmor(ps.a ?? 0);
+        // Latency: ack echoes the last input seq the server processed → RTT = now - its send time.
+        const ackSeq = m.ack[myId];
+        if (ackSeq !== undefined) {
+          const sentAt = pingSentAt.get(ackSeq);
+          if (sentAt !== undefined) hud.setPing(Date.now() - sentAt);
+          for (const k of pingSentAt.keys()) if (k <= ackSeq) pingSentAt.delete(k); // drop acked + stale
+        }
         // Reconcile local prediction against the server POSITION only (never rotation).
         if (local !== undefined) {
           const snapped = local.reconcile(controls.getPosition(), ps.p);
@@ -707,6 +719,7 @@ async function main(): Promise<void> {
         controls.isCrouching,
         controls.isParachuting(),
       );
+      pingSentAt.set(msg.seq, Date.now());
       net.send(msg);
       return 0;
     }

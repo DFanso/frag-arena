@@ -12,6 +12,27 @@ export interface KillFeedEntry {
   text: string;
 }
 
+export const PING_SAMPLES = 10; // rolling window for the ping readout
+
+/** Pure: color for a round-trip latency — green ≤80ms, yellow ≤150ms, red beyond. */
+export function pingColor(ms: number): string {
+  if (ms <= 80) return "#3c9";
+  if (ms <= 150) return "#fc6";
+  return "#e44";
+}
+
+/** Pure: push a sample into a rolling buffer keeping the last `max`; returns a NEW array. */
+export function pushPingSample(buf: number[], sample: number, max: number = PING_SAMPLES): number[] {
+  const next = buf.concat(sample);
+  return next.length > max ? next.slice(next.length - max) : next;
+}
+
+/** Pure: rounded mean of a ping buffer (0 for an empty buffer). */
+export function averagePing(buf: number[]): number {
+  if (buf.length === 0) return 0;
+  return Math.round(buf.reduce((a, b) => a + b, 0) / buf.length);
+}
+
 /**
  * Pure: return a NEW array sorted for scoreboard display.
  * Order: frags desc, then deaths asc, then id asc (deterministic tie-break).
@@ -123,6 +144,8 @@ export class Hud {
   private hitMarker: HTMLDivElement;
   private scoreboard: HTMLDivElement;
   private killFeedEl: HTMLDivElement;
+  private pingEl: HTMLDivElement;
+  private pingBuf: number[] = [];
   private feed: KillFeedEntry[] = [];
   private scoreboardVisible = false;
   private latestPlayers: PlayerSnap[] = [];
@@ -318,6 +341,15 @@ export class Hud {
       "text-shadow:0 1px 2px #000;line-height:1.5;";
     root.appendChild(feedEl);
     this.killFeedEl = feedEl;
+
+    // Ping / latency readout (top-left, just below the minimap; the top-right is the kill feed).
+    const ping = document.createElement("div");
+    ping.style.cssText =
+      "position:absolute;left:20px;top:196px;color:#3c9;font:700 13px monospace;" +
+      "text-shadow:0 1px 2px #000;";
+    ping.textContent = "-- ms";
+    root.appendChild(ping);
+    this.pingEl = ping;
 
     // Scoreboard (centered, hidden until Tab held).
     const sb = document.createElement("div");
@@ -549,6 +581,14 @@ export class Hud {
     ctx.fill();
 
     ctx.restore();
+  }
+
+  /** Feed a fresh round-trip latency sample; renders the smoothed, color-coded ping. */
+  setPing(rttMs: number): void {
+    this.pingBuf = pushPingSample(this.pingBuf, Math.max(0, Math.round(rttMs)));
+    const avg = averagePing(this.pingBuf);
+    this.pingEl.textContent = `${avg} ms`;
+    this.pingEl.style.color = pingColor(avg);
   }
 
   /** Update the health bar from the local player's hp (0..MAX_HP). */
