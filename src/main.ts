@@ -661,6 +661,9 @@ async function main(): Promise<void> {
     onAmmo: (clip, reserve, reloading) => hud.setAmmo(clip, reserve, reloading),
     onWeapon: (name, id) => { hud.setWeapon(name); viewmodel.setWeapon(id); },
     onScope: (active) => hud.setScope(active),
+    // Lower look sensitivity while zoomed (#28) so the on-screen aim speed stays consistent;
+    // scale off the persisted base (the settings slider writes settings.sensitivity directly).
+    onZoomSensitivity: (scale) => controls.setSensitivity(settings.sensitivity * scale),
     onRocket: (has) => hud.setRocket(has),
     sfx: { shoot: () => sfx.shoot(), reload: (ms) => sfx.reload(ms), dryFire: () => sfx.dryFire() },
   });

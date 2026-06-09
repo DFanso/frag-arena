@@ -196,8 +196,13 @@ export interface Conn {
 export interface Weapon {
   id: number; name: string; damage: number; headMult: number; maxRange: number; cooldownMs: number;
   clipSize: number; reserveAmmo: number; reloadMs: number;
-  adsZoom: number; // FOV multiplier while aiming down sights (1 = no zoom)
-  scoped: boolean; // true → full-screen scope overlay on ADS (sniper)
+  adsZoom: number; // FOV multiplier while aiming down sights (1 = no zoom) — == zoomLevels[1] (#22 reuses #28)
+  scoped: boolean; // true → full-screen scope overlay on the zoomed levels (sniper, #2)
+  // Per-weapon zoom levels (#28): FOV multipliers, index 0 = hipfire (always 1, no zoom), each
+  // further entry zooms in (m < 1 narrows the FOV). Right-click engages level 1; scoped weapons
+  // can cycle deeper. A non-scope gun has one extra ADS level; a plain gun is just `[1]`. The
+  // zoom is a client-side aiming aid — the server stays HIT_RADIUS-authoritative regardless.
+  zoomLevels: number[];
   auto: boolean;   // true → fires continuously while the trigger is held (else one shot per click)
   baseSpread: number;  // resting aim-spread cone radius (NDC); 0 = pinpoint. Client-side bloom (#20).
   sprayGrowth: number; // spread added per shot, recovered over time; server stays HIT_RADIUS-authoritative.
@@ -206,9 +211,9 @@ export interface Weapon {
 // tower pickup (see ROCKET_* above) and only usable while held — its ammo is tracked separately
 // (PlayerRec.rocketAmmo), not through the magazine/reserve system, and its blast uses ROCKET_*.
 export const WEAPONS: readonly Weapon[] = [
-  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 10, reloadMs: 1500, adsZoom: 0.8, scoped: false, auto: true, baseSpread: 0.006, sprayGrowth: 0.004 },
-  { id: 1, name: "Sniper", damage: 150, headMult: 2, maxRange: 320, cooldownMs: 3000, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, auto: false, baseSpread: 0.001, sprayGrowth: 0.002 },
-  { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, auto: false, baseSpread: 0, sprayGrowth: 0 },
+  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 10, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.004 },
+  { id: 1, name: "Sniper", damage: 150, headMult: 2, maxRange: 320, cooldownMs: 3000, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, zoomLevels: [1, 0.4, 0.2], auto: false, baseSpread: 0.001, sprayGrowth: 0.002 },
+  { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, zoomLevels: [1, 0.92], auto: false, baseSpread: 0, sprayGrowth: 0 },
 ];
 export const ROCKET_ID = 2; // index of the Rocket launcher in WEAPONS
 
