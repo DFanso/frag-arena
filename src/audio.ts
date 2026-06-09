@@ -1,9 +1,18 @@
-// src/audio.ts — WebAudio SFX: lazily-created context + short synthesized blips.
+// src/audio.ts — WebAudio SFX: lazily-created context + short synthesized blips, plus a few
+// decoded sample files (gunshot / reload) that play through the master gain.
+
+// Sample SFX served from /public/sfx. Each falls back to a synth blip until it's decoded.
+const SAMPLE_URLS: Record<string, string> = {
+  shoot: "/sfx/eaglaxle-gun-shot-1-530788.mp3",
+  reload: "/sfx/reload.mp3",
+};
 
 export class Sfx {
   private ctx: AudioContext | undefined;
   private masterGain: GainNode | undefined; // all blips route through this for a master volume
   private volume = 1;                        // desired 0..1 (applied once the ctx/gain exist)
+  private samples: Partial<Record<string, AudioBuffer>> = {}; // decoded SFX, keyed by SAMPLE_URLS name
+  private samplesLoading = false;
 
   /**
    * Create (or resume) the AudioContext. MUST be called from a user gesture handler
@@ -20,6 +29,37 @@ export class Sfx {
       this.masterGain.connect(this.ctx.destination);
     }
     if (this.ctx.state === "suspended") void this.ctx.resume();
+    void this.loadSamples(); // fetch + decode the SFX samples (once)
+  }
+
+  // Fetch + decode the sample SFX once. Best-effort: any that fail keep their synth-blip fallback.
+  private async loadSamples(): Promise<void> {
+    if (this.samplesLoading || !this.ctx) return;
+    this.samplesLoading = true;
+    const ctx = this.ctx;
+    await Promise.all(
+      Object.entries(SAMPLE_URLS).map(async ([name, url]) => {
+        if (this.samples[name]) return;
+        try {
+          const res = await fetch(url);
+          this.samples[name] = await ctx.decodeAudioData(await res.arrayBuffer());
+        } catch {
+          /* network/decode failed — keep the synth fallback for this one */
+        }
+      }),
+    );
+    this.samplesLoading = false;
+  }
+
+  // Play a decoded sample through the master gain. Returns false if it isn't available yet.
+  private playSample(name: string): boolean {
+    const buf = this.samples[name];
+    if (!buf || !this.ctx || this.ctx.state !== "running" || !this.masterGain) return false;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.masterGain);
+    src.start();
+    return true;
   }
 
   /** Set the master volume (0..1); takes effect immediately and is remembered before unlock(). */
@@ -29,7 +69,7 @@ export class Sfx {
   }
 
   shoot(): void {
-    this.blip("square", 320, 140, 0.18, 0.05);
+    if (!this.playSample("shoot")) this.blip("square", 320, 140, 0.18, 0.05); // sample, else synth fallback
   }
 
   hit(): void {
@@ -41,7 +81,7 @@ export class Sfx {
   }
 
   reload(): void {
-    this.blip("square", 160, 220, 0.12, 0.09);
+    if (!this.playSample("reload")) this.blip("square", 160, 220, 0.12, 0.09); // sample, else synth fallback
   }
 
   dryFire(): void {
