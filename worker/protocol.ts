@@ -7,6 +7,7 @@ export const CLIENT_SEND_MS = 1000 / CLIENT_SEND_HZ;      // ~16.67
 export const INTERP_DELAY_MS = 45;                        // ~2x tick interval + jitter margin (was 120 @ 20Hz on Cloudflare)
 export const MAX_PLAYERS_PER_ROOM = 12;
 export const IDLE_TIMEOUT_MS = 30_000;
+export const RECONNECT_GRACE_MS = 30_000; // a dropped player's identity (id/score/in-match) is restorable by token for this long
 export const MAX_MESSAGE_BYTES = 1024;                    // app-level cap (platform max is 32 MiB)
 export const RATE_LIMIT_MSGS_PER_SEC = 40;                // per connection
 export const RESPAWN_MS = 3000;
@@ -195,7 +196,7 @@ export interface PlayerSnap {
   id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean;
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
-export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; }
+export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; token: string; rejoin: boolean; }
 export interface HitMsg     { t: "hit";     by: number; on: number; dmg: number; hp: number; head: boolean; }
 export interface KillMsg    { t: "kill";    by: number; on: number; w: number; blast?: boolean; } // blast → client gibs the victim
 export interface SpawnMsg   { t: "spawn";   id: number; p: Vec3; prot: number; }

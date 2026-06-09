@@ -10,21 +10,41 @@ import { buildWsUrl, backoff, type LocationLike } from "./net-helpers";
 type Handler = (payload: any) => void;
 
 export class Net {
-  private url: string;
+  private url = "";
   private ws: WebSocket | null = null;
   private handlers = new Map<string, Handler[]>();
   private attempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
+  private room: string;
+  private name: string;
+  private loc: LocationLike;
 
-  // The nickname is baked into the URL query (contract D5 — no JoinMsg).
+  // The nickname is baked into the URL query (contract D5 — no JoinMsg). A session token from
+  // the welcome is persisted per-room and sent on reconnect so the server can restore identity.
   constructor(
     room: string,
     name: string,
     loc: LocationLike = window.location,
   ) {
-    this.url = buildWsUrl(loc, room, name);
+    this.room = room;
+    this.name = name;
+    this.loc = loc;
     this.open();
+  }
+
+  private tokenKey(): string { return `cf-fps-token-${this.room}`; }
+  private readToken(): string {
+    try { return sessionStorage.getItem(this.tokenKey()) ?? ""; } catch { return ""; }
+  }
+  private saveToken(tok: string): void {
+    try { sessionStorage.setItem(this.tokenKey(), tok); } catch { /* storage unavailable */ }
+  }
+  // Rebuild the WS URL fresh on every connect so a reconnect carries the latest token.
+  private buildUrl(): string {
+    const base = buildWsUrl(this.loc, this.room, this.name);
+    const tok = this.readToken();
+    return tok ? `${base}&token=${encodeURIComponent(tok)}` : base;
   }
 
   // Register a handler for a server message "t", or the synthetic "open"/"close".
@@ -60,6 +80,7 @@ export class Net {
   }
 
   private open(): void {
+    this.url = this.buildUrl();
     this.ws = new WebSocket(this.url);
 
     this.ws.addEventListener("open", () => {
@@ -71,7 +92,10 @@ export class Net {
       const raw = typeof ev.data === "string" ? ev.data : "";
       const msg = decode<ServerMsg>(raw);
       if (msg && typeof (msg as { t?: unknown }).t === "string") {
-        this.emit((msg as { t: string }).t, msg);
+        const m = msg as { t: string; token?: string };
+        // Persist the session token from the welcome so reconnects restore identity.
+        if (m.t === "welcome" && typeof m.token === "string") this.saveToken(m.token);
+        this.emit(m.t, msg);
       }
     });
 
