@@ -13,6 +13,8 @@ import {
   ST_ALIVE,
   ST_DEAD,
   ST_PROTECTED,
+  ZONE_LEGS,
+  ZONE_MULT,
   IDLE_TIMEOUT_MS,
   WEAPONS,
   RESPAWN_MS,
@@ -469,7 +471,7 @@ describe("GameRoom.handleShoot", () => {
         seq: 1,
         ts: now,
         o: [0, 1, 0],
-        d: [0, 0, 1],
+        d: [0, -0.03, 1], // aim at the chest zone (mult 1.0) so this exercises plain base damage
         w: 0,
         hit: 2,
         head: false,
@@ -516,12 +518,13 @@ describe("GameRoom.handleShoot", () => {
       const target = makeRec(2, [0, 1, 10]);
       inst.byId.set(1, shooter);
       inst.byId.set(2, target);
-      // Aim DOWN at the body while lying head:true. The server's isHeadshot check overrides the
-      // false claim, so only base damage lands (no free 2x) and the hit is reported as not-head.
+      // Aim DOWN at the body while lying head:true. The server computes the zone from geometry
+      // (issue #29): this low shot is a LEGS hit, so leg-scaled damage lands (never the head 2x)
+      // and the hit is reported as not-head — a false head claim can't grant a headshot.
       inst.handleShoot(shooter, {
         t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, -0.1, 1], w: 0, hit: 2, head: true,
       });
-      expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage); // base damage, NOT the head multiplier
+      expect(target.hp).toBe(MAX_HP - Math.round(WEAPONS[0]!.damage * ZONE_MULT[ZONE_LEGS])); // leg damage, NOT the head multiplier
       const hit = broadcasts.find((b) => (b as { t?: string }).t === "hit") as { head: boolean } | undefined;
       expect(hit?.head).toBe(false);
     });
@@ -934,10 +937,10 @@ describe("GameRoom death / respawn / protection / score", () => {
       inst.byId.set(1, shooter);
       inst.byId.set(2, target);
       inst.handleShoot(shooter, {
-        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, -0.03, 1], w: 0, hit: 2, head: false,
       });
       expect(shooter.st).toBe(ST_ALIVE);
-      // and the shot still landed (protection only gates being shot, not shooting)
+      // and the shot still landed (protection only gates being shot, not shooting) — chest = base dmg
       expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage);
     });
   });

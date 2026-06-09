@@ -20,6 +20,24 @@ export const CROUCH_EYE_HEIGHT = 0.6;                    // capsule top y while 
 export const AIM_CONE_DOT = Math.cos((4 * Math.PI) / 180); // ~4 degrees (legacy; superseded by HIT_RADIUS)
 export const HIT_RADIUS = 1.2;                            // accept a shot whose aim ray passes within this of the target body
 export const HEAD_THRESHOLD = 0.8;                        // impact this far above the target's feet counts as a headshot (client + server)
+
+// --- Per-limb hit zones (issue #29) ---
+// The server classifies every hit into a zone by the impact height above the target's feet
+// (where the aim ray crosses the target's vertical column — see validate.hitZone). This replaces
+// the binary client-trusted head flag: damage = base * zone multiplier, computed server-side.
+export const ZONE_LEGS = 0;
+export const ZONE_STOMACH = 1;
+export const ZONE_CHEST = 2;
+export const ZONE_HEAD = 3;
+export type HitZone = typeof ZONE_LEGS | typeof ZONE_STOMACH | typeof ZONE_CHEST | typeof ZONE_HEAD;
+export const ZONE_NAMES: Record<HitZone, string> = { 0: "legs", 1: "stomach", 2: "chest", 3: "head" };
+// Height bands above the feet (standing eye height = 1.0). >= HEAD_THRESHOLD is the head;
+// then chest, then stomach; below STOMACH_MIN_HEIGHT is legs.
+export const CHEST_MIN_HEIGHT = 0.55;
+export const STOMACH_MIN_HEIGHT = 0.4;
+// CS-style damage multipliers for the non-head zones (the head uses the weapon's own headMult so
+// per-weapon head scaling — e.g. the sniper — is preserved). Stomach hurts more, legs less.
+export const ZONE_MULT: Record<HitZone, number> = { 0: 0.75, 1: 1.25, 2: 1.0, 3: 1.0 };
 export const MAX_MOVE_SPEED = 12;                         // units/sec
 export const MOVE_SPEED_TOLERANCE = 1.6;                  // allow bursts (jump pads etc.)
 export const MOVE_BUDGET_SEC = 0.2;                       // anti-teleport token-bucket burst (sec of travel absorbed before clamping; tolerates network jitter)
@@ -197,7 +215,7 @@ export interface PlayerSnap {
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
 export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; token: string; rejoin: boolean; }
-export interface HitMsg     { t: "hit";     by: number; on: number; dmg: number; hp: number; head: boolean; }
+export interface HitMsg     { t: "hit";     by: number; on: number; dmg: number; hp: number; head: boolean; zone?: HitZone; }
 export interface KillMsg    { t: "kill";    by: number; on: number; w: number; blast?: boolean; } // blast → client gibs the victim
 export interface SpawnMsg   { t: "spawn";   id: number; p: Vec3; prot: number; }
 export interface LeaveMsg   { t: "leave";   id: number; }

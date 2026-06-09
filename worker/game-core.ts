@@ -16,6 +16,7 @@ import {
   ST_ALIVE,
   ST_PROTECTED,
   ST_DEAD,
+  ZONE_HEAD,
   SPAWN_POINTS,
   IDLE_TIMEOUT_MS,
   RECONNECT_GRACE_MS,
@@ -109,8 +110,9 @@ import type {
   SpringPickupMsg,
   FallMsg,
   Weapon,
+  HitZone,
 } from "./protocol";
-import { validateShoot, chooseSpawn, isHeadshot } from "./validate";
+import { validateShoot, chooseSpawn, hitZone, zoneDamageMultiplier } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
 
 interface PlayerRec {
@@ -538,11 +540,11 @@ export class GameRoomCore {
     // Fired, but the claimed hit was not valid (no/dead/protected target, range, aim).
     if (reject !== null || target === null) return;
 
-    // Headshot is server-verified (issue #17): honor the client's `head` claim only when the
-    // aim ray actually crosses the target's head zone. A body/leg shot can no longer claim 2x.
-    const head = m.head && isHeadshot(rec.p, target.p, m.d, target.c);
-    const dmg = head ? weapon.damage * weapon.headMult : weapon.damage;
-    this.applyDamage(target, dmg, rec, head);
+    // Per-limb zone is computed from geometry server-side (issue #29) — the client's `head` claim
+    // is ignored. Damage = base * zone multiplier (head uses the weapon's headMult).
+    const zone = hitZone(rec.p, target.p, m.d, target.c);
+    const dmg = Math.round(weapon.damage * zoneDamageMultiplier(zone, weapon));
+    this.applyDamage(target, dmg, rec, zone === ZONE_HEAD, false, zone);
   }
 
   // Begin a reload of weapon `wRaw` if its magazine isn't full and reserve remains.
@@ -674,7 +676,7 @@ export class GameRoomCore {
   }
 
   // Apply damage (armor soaks first), broadcast a hit, and handle death/respawn/scoring.
-  private applyDamage(target: PlayerRec, dmg: number, killer: PlayerRec, head: boolean, blast = false): void {
+  private applyDamage(target: PlayerRec, dmg: number, killer: PlayerRec, head: boolean, blast = false, zone?: HitZone): void {
     if (target.st === ST_DEAD || target.st === ST_PROTECTED) return;
     // Armor absorbs damage before health.
     let toHp = dmg;
@@ -691,6 +693,7 @@ export class GameRoomCore {
       dmg,
       hp: Math.max(0, target.hp),
       head,
+      zone,
     };
     this.broadcast(hit);
 
