@@ -35,7 +35,7 @@ import type {
   SpringPickupMsg,
 } from "../worker/protocol";
 import { Net } from "./net";
-import { buildArena } from "./map";
+import { buildArena, MINIMAP_BUILDINGS, ARENA_HALF } from "./map";
 import { buildOctree } from "./physics";
 import { FpsControls } from "./controls";
 import { LocalPlayer, RemotePlayer } from "./player";
@@ -689,6 +689,9 @@ async function main(): Promise<void> {
 
     // HUD upkeep (prune expired kill-feed lines).
     hud.renderKillFeed();
+
+    // Minimap / radar — local position + facing drive the overlay (M toggles, N flips mode).
+    hud.updateMinimap(latestSnap, myId, controls.getPosition(), controls.getRotation()[0], MINIMAP_BUILDINGS, ARENA_HALF);
 
     renderer.render(scene, camera);
   }

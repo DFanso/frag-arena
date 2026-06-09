@@ -19,6 +19,23 @@ const WALL_H = 8;
 const WALL_T = 1;
 const CONCRETE = 0x6e6e6a; // Soviet concrete gray
 
+// Exported for the minimap (src/hud.ts): arena scale + the major structures to draw as
+// footprints. Kept in sync by hand with the `home(...)` and `ladderTower(...)` placements
+// below — homes are 2*halfW squares at ±62; the three towers are 5×5 (W=5 in ladderTower).
+export const ARENA_SIZE = ARENA;
+export const ARENA_HALF = HALF;
+export interface MinimapRect { x: number; z: number; w: number; d: number; }
+export const MINIMAP_BUILDINGS: readonly MinimapRect[] = [
+  // Enterable homes — home(cx, cz, halfW, stories): footprint = 2*halfW square.
+  { x: 62, z: 0, w: 18, d: 18 }, { x: -62, z: 0, w: 16, d: 16 },
+  { x: 0, z: 62, w: 18, d: 18 }, { x: 0, z: -62, w: 16, d: 16 },
+  { x: 62, z: 62, w: 16, d: 16 }, { x: -62, z: -62, w: 18, d: 18 },
+  // Climbable towers (5×5 concrete columns).
+  { x: CENTER_TOWER[0], z: CENTER_TOWER[2], w: 5, d: 5 },
+  { x: ROCKET_TOWER[0], z: ROCKET_TOWER[2], w: 5, d: 5 },
+  { x: WATCH_TOWER[0], z: WATCH_TOWER[2], w: 5, d: 5 },
+];
+
 export interface MapProps {
   crate?: GLTF | null; barrel?: GLTF | null; container?: GLTF | null; rock?: GLTF | null; tree?: GLTF | null;
   grass?: GLTF | null; bush?: GLTF | null; fern?: GLTF | null; fence?: GLTF | null; log?: GLTF | null;
