@@ -189,10 +189,15 @@ local Vite, just served by Node.
 ephemeral, exactly like the DO). A GitHub Actions workflow
 (`.github/workflows/docker-image.yml`) builds and pushes it to **GHCR** on every push to `master`.
 
+> **One-time, after the first CI push:** make the GHCR package **public** so Dokploy needs no
+> registry credential. `github.com/<owner>?tab=packages` → the package → **Package settings** →
+> **Change visibility** → **Public**. (New GHCR packages default to private; this only has to be
+> done once. Skip it and keep it private only if you add a `read:packages` credential in Dokploy.)
+
 **Deploy on Dokploy:**
 
 1. Create Project → **Application** → Provider **Docker (image)**.
-2. Image `ghcr.io/<owner>/<repo>:latest` (add a registry credential if the package is private).
+2. Image `ghcr.io/<owner>/<repo>:latest` (no credential once the package is public — see above).
 3. Env: `PORT=8080`.
 4. Domains: add your domain → container port **8080** → enable HTTPS/Let's Encrypt (Traefik
    proxies the WebSocket upgrade automatically — it shares the origin/port).
