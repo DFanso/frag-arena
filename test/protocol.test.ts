@@ -221,6 +221,16 @@ describe("buy menu (issue #26)", () => {
     expect(canBuy(WEAPONS.length, CREDITS_CAP, rich)).toBe(false);
   });
 
+  it("canBuy: rejects a non-integer id WITHOUT throwing (DoS guard, #26)", () => {
+    const rich = defaultOwnedWeapons().map(() => false);
+    // A crafted {t:"buy",weaponId:1.5} is in [0,WEAPONS.length) but WEAPONS[1.5] is undefined →
+    // an unguarded deref throws and crashes the DO / Node process from routeMessage.
+    for (const bad of [1.5, 0.1, 2.9, NaN, Infinity, -0.5]) {
+      expect(() => canBuy(bad, CREDITS_CAP, rich)).not.toThrow();
+      expect(canBuy(bad, CREDITS_CAP, rich)).toBe(false);
+    }
+  });
+
   it("round-trips a BuyMsg and a BoughtMsg", () => {
     const buy: BuyMsg = { t: "buy", weaponId: buyable.id };
     expect(decode<BuyMsg>(encode(buy))).toEqual(buy);

@@ -175,7 +175,7 @@ export class GameRoomCore {
   private nextId = 1;
   // Identity of recently-disconnected players, keyed by session token, so a reconnect within
   // RECONNECT_GRACE_MS restores their id / score / in-match state instead of joining fresh.
-  private savedIdentities = new Map<string, { id: number; name: string; frags: number; deaths: number; inMatch: boolean; savedAt: number }>();
+  private savedIdentities = new Map<string, { id: number; name: string; frags: number; deaths: number; credits: number; ownedWeapons: boolean[]; inMatch: boolean; savedAt: number }>();
   private tick = 0;
   private tickHandle: ReturnType<typeof setInterval> | undefined;
   private matchEndsAt = 0;     // server epoch ms the current match ends (0 = no active match)
@@ -329,8 +329,11 @@ export class GameRoomCore {
       st: ST_ALIVE,
       frags: rejoin ? saved!.frags : 0,
       deaths: rejoin ? saved!.deaths : 0,
-      credits: STARTING_CREDITS, // reset again at startMatch; seeded here so a lobby snap is sane
-      ownedWeapons: defaultOwnedWeapons(), // only the free Rifle until bought (issue #26)
+      // Restore the full match economy on reconnect, not just frags/deaths — otherwise a player
+      // can drop+rejoin within the grace window to refresh to STARTING_CREDITS (a free-refill
+      // exploit) and silently lose bought weapons (#12). Fresh joiners get the defaults.
+      credits: rejoin ? saved!.credits : STARTING_CREDITS,
+      ownedWeapons: rejoin ? saved!.ownedWeapons.slice() : defaultOwnedWeapons(),
       lastShotAt: 0,
       lastInputAt: now,
       respawnAt: 0,
@@ -467,6 +470,7 @@ export class GameRoomCore {
     // Preserve identity briefly so a reconnect with the same token restores id/score/in-match.
     this.savedIdentities.set(rec.token, {
       id: rec.id, name: rec.name, frags: rec.frags, deaths: rec.deaths,
+      credits: rec.credits, ownedWeapons: rec.ownedWeapons.slice(),
       inMatch: rec.inMatch, savedAt: Date.now(),
     });
     this.players.delete(ws);

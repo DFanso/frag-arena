@@ -284,7 +284,10 @@ export function defaultOwnedWeapons(): boolean[] {
 // gating and the server's deduction agree exactly. Rejects an unknown / non-buyable weapon, one
 // already owned, or an unaffordable price. The Rocket (a tower pickup) is `buyable:false`.
 export function canBuy(weaponId: number, credits: number, owned: readonly boolean[]): boolean {
-  if (weaponId < 0 || weaponId >= WEAPONS.length) return false;
+  // Reject non-integer / out-of-range ids up front: a crafted {t:"buy",weaponId:1.5} otherwise
+  // passes the range check and WEAPONS[1.5] is undefined → a throw that crashes the DO / Node
+  // process from the unguarded routeMessage path (remote DoS). Number.isInteger closes it (#26).
+  if (!Number.isInteger(weaponId) || weaponId < 0 || weaponId >= WEAPONS.length) return false;
   const w = WEAPONS[weaponId]!;
   if (!w.buyable) return false;
   if (owned[weaponId]) return false;

@@ -1940,6 +1940,30 @@ describe("GameRoom reconnect identity", () => {
     a2.close();
   });
 
+  it("restores credits + bought weapons on reconnect — no free-refill exploit (#12)", async () => {
+    const stub = roomStub("reconnect-economy");
+    const a = await connect(stub, "rich");
+    const w1 = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.startMatch();
+      const rec = i.byId.get(w1.id);
+      rec.credits = 137;          // spent down from STARTING_CREDITS
+      rec.ownedWeapons[1] = true; // bought the sniper
+      i.removePlayer(rec.ws);
+    });
+    const a2 = await connect(stub, "rich", w1.token);
+    const w2 = await nextMessage<WelcomeMsg>(a2, ["welcome"]);
+    expect(w2.rejoin).toBe(true);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      const rec = i.byId.get(w1.id);
+      expect(rec.credits).toBe(137);          // NOT refreshed to STARTING_CREDITS (exploit closed)
+      expect(rec.ownedWeapons[1]).toBe(true); // bought gun retained across the reconnect
+    });
+    a2.close();
+  });
+
   it("joins fresh (rejoin=false) when the reconnect token is unknown", async () => {
     const stub = roomStub("reconnect-unknown");
     const a = await connect(stub, "bob", "not-a-real-token");
