@@ -1,7 +1,7 @@
 // worker/game-core.ts — transport-agnostic authoritative game room.
 //
 // This is the SINGLE SOURCE OF TRUTH for the game logic. It holds all room state in memory and
-// runs the 20 Hz tick, combat validation, pickups, and the match lifecycle. It knows NOTHING
+// runs the server tick (SERVER_TICK_HZ), combat validation, pickups, and the match lifecycle. It knows NOTHING
 // about Cloudflare Durable Objects or the Node `ws` library — it operates only on the minimal
 // `Conn` seam (send/close). Two thin adapters drive it:
 //   - worker/room.ts   — the Cloudflare Durable Object (hibernation WebSocket API)
