@@ -79,7 +79,7 @@ export class Viewmodel {
     }
   }
 
-  recoil(): void { this.recoilZ = RECOIL_BACK; }
+  recoil(scale = 1): void { this.recoilZ = RECOIL_BACK * scale; }
   flash(): void { this.flashUntil = performance.now() + 60; }
 
   update(dtMs: number): void {

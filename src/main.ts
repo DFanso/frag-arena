@@ -654,7 +654,7 @@ async function main(): Promise<void> {
     onLocalShoot: (hit, weaponId) => {
       // sniper (id 1) → its fire+reload clip; rocket launcher / "mortar" (id 2) → launcher thump; else machine-gun.
       sfx.shoot(weaponId === 1 ? "sniper" : weaponId === 2 ? "mortar" : "shoot");
-      viewmodel.recoil();
+      viewmodel.recoil(1 + (shootHandle?.getSpread() ?? 0) * 6); // kick scales with bloom (#20)
       viewmodel.flash();
       if (hit) hud.flashHitMarker();
     },
@@ -769,7 +769,8 @@ async function main(): Promise<void> {
     );
 
     // Auto-fire (hold-to-shoot for full-auto weapons) + viewmodel recoil/flash ease.
-    shootHandle?.update();
+    shootHandle?.update(dtMs);
+    hud.setCrosshairSpread(shootHandle?.getSpread() ?? 0); // bloom widens the crosshair gap (#20)
     viewmodel.update(dtMs);
 
     // Death countdown HUD update.

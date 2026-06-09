@@ -3,7 +3,7 @@
 // Ammo is client-predicted for instant HUD feedback; the server enforces it authoritatively.
 import * as THREE from "three";
 import { WEAPONS, GRENADE_COOLDOWN_MS, ROCKET_ID, ROCKET_CLIP, type ShootMsg, type ReloadMsg, type ThrowMsg, type RocketMsg } from "../worker/protocol";
-import { fireRay, fireRocket } from "./combat";
+import { fireRay, fireRocket, bumpSpread, decaySpread } from "./combat";
 
 export interface WeaponDeps {
   camera: THREE.PerspectiveCamera;
@@ -29,6 +29,7 @@ export class WeaponController {
   private reloading: boolean[] = WEAPONS.map(() => false);
   private timers: Array<ReturnType<typeof setTimeout> | undefined> = WEAPONS.map(() => undefined);
   private ads = false;
+  private currentSpread = WEAPONS[0]!.baseSpread; // aim-spread/bloom (#20); decays toward baseSpread
   private lastThrow = 0;
   private firing = false;   // left mouse button held
   private lastFireAt = 0;   // performance.now() of the last shot (client fire-rate gate)
@@ -127,8 +128,14 @@ export class WeaponController {
 
   // Auto-fire: keep firing while the trigger is held on a full-auto weapon (rate-limited
   // by the weapon's cooldown so the client stays in sync with the server). Called per frame.
-  update(): void {
+  update(dtMs = 0): void {
+    this.currentSpread = decaySpread(this.currentSpread, WEAPONS[this.cur]!.baseSpread, dtMs);
     if (this.firing && this.d.isLocked() && WEAPONS[this.cur]!.auto) this.fire();
+  }
+
+  /** Current aim-spread cone radius (NDC) — the HUD widens the crosshair gap from this (#20). */
+  getSpread(): number {
+    return this.currentSpread;
   }
 
   // Mark the local player dead/alive — gates firing + throwing so a corpse can't emit messages.
@@ -148,7 +155,10 @@ export class WeaponController {
     this.lastFireAt = now;
     this.clip[w]! -= 1;
     this.emit();
-    const res = fireRay(this.d.camera, this.d.getTargets());
+    const wp = WEAPONS[w]!;
+    const spread = this.ads ? this.currentSpread * 0.3 : this.currentSpread; // ADS tightens the cone
+    const res = fireRay(this.d.camera, this.d.getTargets(), spread);
+    this.currentSpread = bumpSpread(this.currentSpread, wp.baseSpread, wp.sprayGrowth); // bloom for the next shot
     this.d.send({ t: "shoot", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, w, hit: res.hit, head: res.head, barrel: res.barrel });
     this.d.onLocalShoot(res.hit !== null, w);
     if (this.clip[w]! <= 0) this.startReload(w);
@@ -204,6 +214,7 @@ export class WeaponController {
     if (id < 0 || id >= WEAPONS.length || id === this.cur) return;
     if (id === ROCKET_ID && !this.hasRocket) return; // can't select a launcher you don't hold
     this.cur = id;
+    this.currentSpread = WEAPONS[id]!.baseSpread; // fresh weapon → reset bloom
     this.applyFov();
     this.d.onScope(this.ads && WEAPONS[id]!.scoped);
     this.d.onWeapon(WEAPONS[id]!.name, id);
@@ -230,6 +241,7 @@ export class WeaponController {
     this.clip[ROCKET_ID] = 0; // un-held until the next tower pickup
     this.d.onRocket(false);
     this.cur = 0;
+    this.currentSpread = WEAPONS[0]!.baseSpread;
     this.ads = false;
     this.lastThrow = 0;
     this.firing = false;
