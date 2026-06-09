@@ -44,6 +44,10 @@ import {
   SPRING_DURATION_MS,
   CHAT_MIN_INTERVAL_MS,
   CHAT_MAX_LEN,
+  STARTING_CREDITS,
+  CREDITS_PER_HIT,
+  CREDITS_PER_KILL,
+  CREDITS_CAP,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -406,6 +410,7 @@ function makeRec(
     hasRocket: boolean;
     rocketAmmo: number;
     armor: number;
+    credits: number;
   }> = {},
 ) {
   const ws = {} as unknown as WebSocket;
@@ -420,6 +425,7 @@ function makeRec(
     st: opts.st ?? ST_ALIVE,
     frags: 0,
     deaths: 0,
+    credits: opts.credits ?? STARTING_CREDITS,
     lastShotAt: opts.lastShotAt ?? 0,
     lastInputAt: opts.lastInputAt ?? Date.now(),
     respawnAt: 0,
@@ -451,6 +457,13 @@ type RoomInternals = {
   handleChat: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
   loopTick: () => void;
   ingestInput: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
+  applyDamage: (
+    target: ReturnType<typeof makeRec>,
+    dmg: number,
+    killer: ReturnType<typeof makeRec>,
+    head: boolean,
+    blast?: boolean,
+  ) => void;
   webSocketMessage: (ws: WebSocket, raw: string | ArrayBuffer) => void;
   matchActive: boolean;
 };
@@ -1679,6 +1692,114 @@ describe("GameRoom.handleChat", () => {
 
       inst.handleChat(rec, { t: "chat", from: 1, name: "p1", body: "hi lobby" });
       expect(broadcasts.some((b) => (b as { t?: string }).t === "chat")).toBe(true);
+    });
+  });
+});
+
+// ---- credits economy (issue #25) ----
+describe("GameRoom credits economy (issue #25)", () => {
+  it("awards CREDITS_PER_HIT to the shooter on a confirmed (non-lethal) hit", async () => {
+    const stub = env.ROOMS.getByName("credits-hit");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000, credits: STARTING_CREDITS });
+      const target = makeRec(2, [0, 1, 10], { credits: STARTING_CREDITS }); // full hp → not lethal
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+
+      expect(shooter.credits).toBe(STARTING_CREDITS + CREDITS_PER_HIT);
+      expect(target.credits).toBe(STARTING_CREDITS); // the victim earns nothing for being hit
+    });
+  });
+
+  it("awards the kill bonus (hit + kill) to the killer on a frag", async () => {
+    const stub = env.ROOMS.getByName("credits-kill");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000, credits: STARTING_CREDITS });
+      const target = makeRec(2, [0, 1, 10], { hp: 10, credits: STARTING_CREDITS }); // 25 dmg is lethal
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: 2, head: false,
+      });
+
+      expect(target.st).toBe(ST_DEAD);
+      expect(shooter.frags).toBe(1);
+      // The lethal hit earns BOTH the per-hit award and the kill bonus.
+      expect(shooter.credits).toBe(STARTING_CREDITS + CREDITS_PER_HIT + CREDITS_PER_KILL);
+      expect(target.credits).toBe(STARTING_CREDITS); // the victim's balance is untouched
+    });
+  });
+
+  it("grants no credits for self damage (no killer === target award)", async () => {
+    const stub = env.ROOMS.getByName("credits-self");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      // A self-inflicted lethal hit (e.g. own grenade / fall): killer and target are the same rec.
+      const rec = makeRec(1, [0, 1, 0], { hp: 30, credits: STARTING_CREDITS });
+      inst.byId.set(1, rec);
+
+      inst.applyDamage(rec, 999, rec, false, true); // lethal self-blast
+
+      expect(rec.st).toBe(ST_DEAD);
+      expect(rec.frags).toBe(0);              // no frag credit for a suicide
+      expect(rec.credits).toBe(STARTING_CREDITS); // …and no money either
+    });
+  });
+
+  it("clamps a balance at CREDITS_CAP", async () => {
+    const stub = env.ROOMS.getByName("credits-cap");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const killer = makeRec(1, [0, 1, 0], { credits: CREDITS_CAP - 5 });
+      const target = makeRec(2, [0, 1, 10], { hp: 10, credits: STARTING_CREDITS });
+      inst.byId.set(1, killer);
+      inst.byId.set(2, target);
+
+      inst.applyDamage(target, 999, killer, false, false); // lethal: hit + kill awards both apply
+
+      expect(killer.credits).toBe(CREDITS_CAP); // would overshoot, clamped to the ceiling
+    });
+  });
+
+  it("resets every player's credits to STARTING_CREDITS at match start", async () => {
+    const stub = env.ROOMS.getByName("credits-reset");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & { startMatch: () => void };
+      inst.broadcast = () => {};
+      const a = makeRec(1, [0, 1, 0], { credits: 1234 });
+      const b = makeRec(2, [10, 1, 0], { credits: 9999 });
+      for (const r of [a, b]) { r.ready = true; inst.byId.set(r.id, r); inst.players.set(r.ws, r); }
+
+      inst.startMatch();
+
+      expect(a.credits).toBe(STARTING_CREDITS);
+      expect(b.credits).toBe(STARTING_CREDITS);
+    });
+  });
+
+  it("includes credits in the per-player snapshot (snapOf)", async () => {
+    const stub = env.ROOMS.getByName("credits-snap");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        snapOf: (rec: ReturnType<typeof makeRec>) => { credits?: number };
+      };
+      inst.broadcast = () => {};
+      const rec = makeRec(1, [0, 1, 0], { credits: 4321 });
+      const snap = inst.snapOf(rec);
+      expect(snap.credits).toBe(4321);
     });
   });
 });
