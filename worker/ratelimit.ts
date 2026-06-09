@@ -66,3 +66,26 @@ export class ConnRateLimiter {
     }
   }
 }
+
+/**
+ * Resolve the rate-limit key (client IP) from a Node upgrade request. X-Forwarded-For is
+ * CLIENT-CONTROLLED, so it is honored ONLY when `trustProxy` is set — i.e. the operator has
+ * confirmed an upstream reverse proxy fronts the app and the port is not directly reachable.
+ * When trusted we take the LAST hop (the address the trusted proxy itself appended; a value the
+ * client prepended sits to the left and is ignored). When untrusted we key on the unspoofable
+ * socket address. This closes the flood-guard bypass where each forged XFF value opened its own
+ * fresh window (#15). The Cloudflare path uses CF-Connecting-IP, which is unspoofable.
+ */
+export function pickClientIp(
+  xff: string | string[] | undefined,
+  remoteAddr: string | undefined,
+  trustProxy: boolean,
+): string {
+  if (trustProxy && xff !== undefined) {
+    const joined = Array.isArray(xff) ? xff.join(",") : xff;
+    const hops = joined.split(",").map((s) => s.trim()).filter(Boolean);
+    const last = hops[hops.length - 1];
+    if (last) return last;
+  }
+  return remoteAddr || "unknown";
+}

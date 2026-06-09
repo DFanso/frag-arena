@@ -17,7 +17,7 @@ import {
   WS_CONN_WINDOW_MS,
 } from "../worker/protocol";
 import type { Conn } from "../worker/protocol";
-import { ConnRateLimiter } from "../worker/ratelimit";
+import { ConnRateLimiter, pickClientIp } from "../worker/ratelimit";
 
 const PORT = Number(process.env.PORT ?? 8080);
 // Static root, cwd-relative. The Dockerfile sets WORKDIR /app and copies the client to
@@ -70,14 +70,15 @@ const wss = new WebSocketServer({ noServer: true });
 // Heartbeat liveness (replaces the DO's setWebSocketAutoResponse keep-alive + dead-socket
 // reaping). Browsers auto-answer protocol pings; a socket that misses a round is terminated.
 const alive = new WeakMap<WsSocket, boolean>();
-// Per-IP WebSocket-upgrade flood guard (issue #15), mirroring the Cloudflare worker. Behind a
-// reverse proxy (Dokploy) the client IP is the first X-Forwarded-For hop; fall back to the raw
-// socket address. Reuses the shared pure limiter.
+// Per-IP WebSocket-upgrade flood guard (issue #15), mirroring the Cloudflare worker. X-Forwarded-For
+// is client-controlled, so it is trusted ONLY behind a reverse proxy (set TRUST_PROXY=1 once you've
+// confirmed the proxy fronts the app and the port isn't directly reachable); otherwise we key on the
+// unspoofable socket address. Without this gate a direct attacker forges a fresh XFF per upgrade and
+// bypasses the limiter entirely. Reuses the shared pure limiter + pickClientIp helper.
+const TRUST_PROXY = process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true";
 const wsLimiter = new ConnRateLimiter(WS_CONN_LIMIT_PER_IP, WS_CONN_WINDOW_MS);
 function clientIp(req: import("node:http").IncomingMessage): string {
-  const fwd = req.headers["x-forwarded-for"];
-  const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0]?.trim();
-  return first || req.socket.remoteAddress || "unknown";
+  return pickClientIp(req.headers["x-forwarded-for"], req.socket.remoteAddress, TRUST_PROXY);
 }
 
 server.on("upgrade", (req, socket, head) => {
