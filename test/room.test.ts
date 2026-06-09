@@ -497,6 +497,28 @@ describe("GameRoom.handleShoot", () => {
     });
   });
 
+  it("a head claim on a body/leg shot is rejected — server verifies geometry (issue #17)", async () => {
+    const stub = env.ROOMS.getByName("shoot-head-exploit");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+      // Aim DOWN at the body while lying head:true. The server's isHeadshot check overrides the
+      // false claim, so only base damage lands (no free 2x) and the hit is reported as not-head.
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, -0.1, 1], w: 0, hit: 2, head: true,
+      });
+      expect(target.hp).toBe(MAX_HP - WEAPONS[0]!.damage); // base damage, NOT the head multiplier
+      const hit = broadcasts.find((b) => (b as { t?: string }).t === "hit") as { head: boolean } | undefined;
+      expect(hit?.head).toBe(false);
+    });
+  });
+
   it("a rejected shot (firerate) does NOT reduce hp and emits no hit", async () => {
     const stub = env.ROOMS.getByName("shoot-firerate");
     await runInDurableObject(stub, async (instance: GameRoom) => {
