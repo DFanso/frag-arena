@@ -14,10 +14,11 @@ const SAMPLE_URLS: Record<string, string> = {
   dryfire: "/sfx/freesound_community-empty-gun-shot-6209.mp3",
 };
 
-// Leading-edge debounce for the hit confirm: the first hit of a streak plays, and further hits
-// are suppressed until there's a quiet gap of at least this long — so rapid hits don't machine-gun
-// the sound. Every hit extends the window, so a sustained burst only ever plays the first.
-const HIT_DEBOUNCE_MS = 1500;
+// Leading-edge debounce windows (ms): the first call plays, later calls are suppressed until a
+// quiet gap this long passes. Each call extends the window, so a sustained streak plays once.
+// Stops rapid/auto-fire events (landing hits, dry-firing an empty mag) from machine-gunning a clip.
+const HIT_DEBOUNCE_MS =  8000;
+const DRYFIRE_DEBOUNCE_MS = 700;
 
 export class Sfx {
   private ctx: AudioContext | undefined;
@@ -26,7 +27,7 @@ export class Sfx {
   private samples: Partial<Record<string, AudioBuffer>> = {}; // decoded SFX, keyed by SAMPLE_URLS name
   private samplesLoading = false;
   private musicSrc: AudioBufferSourceNode | undefined; // the one playing music track (outro), so it can be stopped
-  private lastHitAt = -Infinity; // performance.now() of the last hit() call (drives the hit debounce)
+  private lastPlayed: Record<string, number> = {}; // performance.now() of the last call per debounced sound
 
   /**
    * Create (or resume) the AudioContext. MUST be called from a user gesture handler
@@ -117,12 +118,17 @@ export class Sfx {
     this.blip("square", 320, 140, 0.18, 0.05);
   }
 
-  hit(): void {
-    // Leading-edge debounce: only the first hit of a streak plays; later hits extend the window.
+  // Leading-edge debounce: true on the first call, then false until `windowMs` of quiet. Each call
+  // (even a suppressed one) extends the window, so a sustained streak only passes once.
+  private debounce(key: string, windowMs: number): boolean {
     const now = performance.now();
-    const play = now - this.lastHitAt >= HIT_DEBOUNCE_MS;
-    this.lastHitAt = now;
-    if (!play) return;
+    const pass = now - (this.lastPlayed[key] ?? -Infinity) >= windowMs;
+    this.lastPlayed[key] = now;
+    return pass;
+  }
+
+  hit(): void {
+    if (!this.debounce("hit", HIT_DEBOUNCE_MS)) return; // don't machine-gun the hit confirm
     if (!this.playSample("hit")) this.blip("triangle", 880, 660, 0.22, 0.06); // sample, else synth fallback
   }
 
@@ -146,6 +152,7 @@ export class Sfx {
   }
 
   dryFire(): void {
+    if (!this.debounce("dryfire", DRYFIRE_DEBOUNCE_MS)) return; // holding fire on an empty mag spams this — debounce it
     if (!this.playSample("dryfire")) this.blip("square", 120, 90, 0.10, 0.04); // empty-gun click sample, else synth fallback
   }
 
