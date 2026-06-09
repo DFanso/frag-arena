@@ -659,7 +659,7 @@ async function main(): Promise<void> {
     onWeapon: (name, id) => { hud.setWeapon(name); viewmodel.setWeapon(id); },
     onScope: (active) => hud.setScope(active),
     onRocket: (has) => hud.setRocket(has),
-    sfx: { shoot: () => sfx.shoot(), reload: () => sfx.reload(), dryFire: () => sfx.dryFire() },
+    sfx: { shoot: () => sfx.shoot(), reload: (ms) => sfx.reload(ms), dryFire: () => sfx.dryFire() },
   });
 
   // ---- Esc pause / settings overlay ---------------------------------------

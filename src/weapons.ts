@@ -19,7 +19,7 @@ export interface WeaponDeps {
   onWeapon: (name: string, id: number) => void;
   onScope: (active: boolean) => void;
   onRocket: (has: boolean) => void;        // rocket launcher gained / lost (HUD pickup banner)
-  sfx: { shoot(): void; reload(): void; dryFire(): void };
+  sfx: { shoot(sample?: string): void; reload(durationMs: number): void; dryFire(): void };
 }
 
 export class WeaponController {
@@ -121,7 +121,7 @@ export class WeaponController {
     if (this.reloading[w] || this.clip[w]! >= wp.clipSize || this.reserve[w]! <= 0) return;
     this.reloading[w] = true;
     this.d.send({ t: "reload", w });
-    if (w === this.cur) { this.d.sfx.reload(); this.emit(); }
+    if (w === this.cur) { this.d.sfx.reload(wp.reloadMs); this.emit(); }
     this.timers[w] = setTimeout(() => this.finishReload(w), wp.reloadMs);
   }
 

@@ -5,7 +5,8 @@
 const SAMPLE_URLS: Record<string, string> = {
   shoot: "/sfx/eaglaxle-gun-shot-1-530788.mp3",
   sniper: "/sfx/sniper.mp3",
-  reload: "/sfx/reload.mp3",
+  reload_start: "/sfx/reload_start.mp3",
+  reload_end: "/sfx/reload_end.mp3",
 };
 
 export class Sfx {
@@ -56,11 +57,17 @@ export class Sfx {
   private playSample(name: string): boolean {
     const buf = this.samples[name];
     if (!buf || !this.ctx || this.ctx.state !== "running" || !this.masterGain) return false;
+    this.playBuffer(buf, this.ctx.currentTime);
+    return true;
+  }
+
+  // Schedule a buffer to start at AudioContext time `when`, routed through the master gain.
+  private playBuffer(buf: AudioBuffer, when: number): void {
+    if (!this.ctx || !this.masterGain) return;
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.connect(this.masterGain);
-    src.start();
-    return true;
+    src.start(when);
   }
 
   /** Set the master volume (0..1); takes effect immediately and is remembered before unlock(). */
@@ -85,8 +92,19 @@ export class Sfx {
     this.blip("sawtooth", 260, 60, 0.28, 0.22);
   }
 
-  reload(): void {
-    if (!this.playSample("reload")) this.blip("square", 160, 220, 0.12, 0.09); // sample, else synth fallback
+  // Two-part reload synced to the weapon's reload time: the "start" clip plays now, the "end" clip
+  // is scheduled to FINISH exactly when the reload completes (durationMs from now). Falls back to a
+  // synth blip if the samples aren't loaded.
+  reload(durationMs: number): void {
+    const start = this.samples["reload_start"];
+    const end = this.samples["reload_end"];
+    if (!this.ctx || this.ctx.state !== "running" || !this.masterGain || (!start && !end)) {
+      this.blip("square", 160, 220, 0.12, 0.09);
+      return;
+    }
+    const now = this.ctx.currentTime;
+    if (start) this.playBuffer(start, now);
+    if (end) this.playBuffer(end, now + Math.max(0, durationMs / 1000 - end.duration));
   }
 
   dryFire(): void {
