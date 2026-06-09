@@ -6,6 +6,8 @@ import {
   sanitizeName,
   sanitizeChat,
   addCredits,
+  canBuy,
+  defaultOwnedWeapons,
   CHAT_MAX_LEN,
   CREDITS_CAP,
   STARTING_CREDITS,
@@ -15,6 +17,7 @@ import {
   WEAPONS,
   ROCKET_ID,
   ROCKET_CLIP,
+  DEFAULT_WEAPON,
   GRENADE_START,
   GRENADE_MAX,
   type InMsg,
@@ -23,6 +26,8 @@ import {
   type RocketMsg,
   type RocketFxMsg,
   type ChatMsg,
+  type BuyMsg,
+  type BoughtMsg,
 } from "../worker/protocol";
 
 describe("encode/decode round-trip", () => {
@@ -169,6 +174,58 @@ describe("addCredits (issue #25)", () => {
   it("respects an explicit cap argument", () => {
     expect(addCredits(90, 50, 100)).toBe(100);
     expect(addCredits(40, 30, 100)).toBe(70);
+  });
+});
+
+describe("buy menu (issue #26)", () => {
+  // The first buyable weapon in the catalog (the Sniper today) — pick it generically so the test
+  // stays correct if costs / ids change.
+  const buyable = WEAPONS.find((w) => w.buyable)!;
+
+  it("the catalog has a free default weapon and at least one buyable gun", () => {
+    expect(WEAPONS[DEFAULT_WEAPON]!.cost).toBe(0);
+    expect(WEAPONS[DEFAULT_WEAPON]!.buyable).toBe(false); // the starter is owned, never bought
+    expect(WEAPONS[ROCKET_ID]!.buyable).toBe(false);      // the rocket is a tower pickup, not buyable
+    expect(buyable).toBeDefined();
+    expect(buyable.cost).toBeGreaterThan(0);
+  });
+
+  it("defaultOwnedWeapons owns only DEFAULT_WEAPON", () => {
+    const owned = defaultOwnedWeapons();
+    expect(owned.length).toBe(WEAPONS.length);
+    expect(owned[DEFAULT_WEAPON]).toBe(true);
+    expect(owned.filter(Boolean).length).toBe(1);
+    expect(owned[buyable.id]).toBe(false);
+  });
+
+  it("canBuy: accepts an affordable, unowned, buyable weapon", () => {
+    expect(canBuy(buyable.id, buyable.cost, defaultOwnedWeapons())).toBe(true);
+    expect(canBuy(buyable.id, buyable.cost + 1, defaultOwnedWeapons())).toBe(true);
+  });
+
+  it("canBuy: rejects when too poor", () => {
+    expect(canBuy(buyable.id, buyable.cost - 1, defaultOwnedWeapons())).toBe(false);
+  });
+
+  it("canBuy: rejects an already-owned weapon", () => {
+    const owned = defaultOwnedWeapons();
+    owned[buyable.id] = true;
+    expect(canBuy(buyable.id, CREDITS_CAP, owned)).toBe(false);
+  });
+
+  it("canBuy: rejects a non-buyable weapon (rifle, rocket) and out-of-range ids", () => {
+    const rich = defaultOwnedWeapons().map(() => false); // own nothing, infinite budget below
+    expect(canBuy(DEFAULT_WEAPON, CREDITS_CAP, rich)).toBe(false); // free starter isn't "bought"
+    expect(canBuy(ROCKET_ID, CREDITS_CAP, rich)).toBe(false);      // tower pickup, not buyable
+    expect(canBuy(-1, CREDITS_CAP, rich)).toBe(false);
+    expect(canBuy(WEAPONS.length, CREDITS_CAP, rich)).toBe(false);
+  });
+
+  it("round-trips a BuyMsg and a BoughtMsg", () => {
+    const buy: BuyMsg = { t: "buy", weaponId: buyable.id };
+    expect(decode<BuyMsg>(encode(buy))).toEqual(buy);
+    const bought: BoughtMsg = { t: "bought", weaponId: buyable.id, credits: 1234 };
+    expect(decode<BoughtMsg>(encode(bought))).toEqual(bought);
   });
 });
 

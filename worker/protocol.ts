@@ -86,6 +86,14 @@ export const CREDITS_PER_HIT = 25;     // granted to the shooter on every confir
 export const CREDITS_PER_KILL = 300;   // bonus granted to the killer on a frag (on top of the hit)
 export const CREDITS_CAP = 16000;      // balances are clamped to this ceiling
 
+// --- Buy menu (issue #26) — the SPENDING half of the CS-style economy (#25 earns; this spends).
+// Each player owns the Rifle (id 0) for free from spawn; the other catalog guns must be PURCHASED
+// from the buy menu (B) with credits, which equips them. Ownership is server-authoritative: it is
+// reset to the free starter at match start, the server deducts Weapon.cost on a valid buy, and
+// handleShoot only honours a shot from an owned weapon (a client can't fire an unbought gun). The
+// Rocket launcher stays a tower pickup (NOT buyable) — its ownership is governed by hasRocket. ---
+export const DEFAULT_WEAPON = 0;        // the Rifle (id 0): owned for free from spawn, cost 0
+
 // --- Text chat (issue #10) ---
 export const CHAT_MAX_LEN = 120;          // server caps each message body to this many chars
 export const CHAT_MIN_INTERVAL_MS = 500;  // per-player chat cooldown (max ~2 messages/sec)
@@ -212,6 +220,12 @@ export interface Conn {
 export interface Weapon {
   id: number; name: string; damage: number; headMult: number; maxRange: number; cooldownMs: number;
   clipSize: number; reserveAmmo: number; reloadMs: number;
+  // Buy-menu price in credits (issue #26). 0 = free / default-owned (Rifle) or NOT buyable from the
+  // menu (Rocket — a tower pickup; see `buyable` below). Spent server-side on a valid `buy`.
+  cost: number;
+  // True → appears in the buy menu and can be purchased with credits (the Rifle is owned for free;
+  // the Rocket is a tower pickup, so both are excluded). Keeps the catalog data-driven.
+  buyable: boolean;
   adsZoom: number; // FOV multiplier while aiming down sights (1 = no zoom) — == zoomLevels[1] (#22 reuses #28)
   scoped: boolean; // true → full-screen scope overlay on the zoomed levels (sniper, #2)
   // Per-weapon zoom levels (#28): FOV multipliers, index 0 = hipfire (always 1, no zoom), each
@@ -227,9 +241,9 @@ export interface Weapon {
 // tower pickup (see ROCKET_* above) and only usable while held — its ammo is tracked separately
 // (PlayerRec.rocketAmmo), not through the magazine/reserve system, and its blast uses ROCKET_*.
 export const WEAPONS: readonly Weapon[] = [
-  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 10, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.004 },
-  { id: 1, name: "Sniper", damage: 150, headMult: 2, maxRange: 320, cooldownMs: 3000, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, zoomLevels: [1, 0.4, 0.2], auto: false, baseSpread: 0.001, sprayGrowth: 0.002 },
-  { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, zoomLevels: [1, 0.92], auto: false, baseSpread: 0, sprayGrowth: 0 },
+  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 10, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.004, cost: 0, buyable: false },
+  { id: 1, name: "Sniper", damage: 150, headMult: 2, maxRange: 320, cooldownMs: 3000, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, zoomLevels: [1, 0.4, 0.2], auto: false, baseSpread: 0.001, sprayGrowth: 0.002, cost: 1500, buyable: true },
+  { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, zoomLevels: [1, 0.92], auto: false, baseSpread: 0, sprayGrowth: 0, cost: 0, buyable: false },
 ];
 export const ROCKET_ID = 2; // index of the Rocket launcher in WEAPONS
 
@@ -264,7 +278,12 @@ export interface FallMsg { t: "fall"; dmg: number; }
 // (the `from`/`name` it fills are advisory — the server overwrites them with the connection's own
 // authoritative id/name and re-sanitizes the body before re-broadcasting to the whole room).
 export interface ChatMsg { t: "chat"; from: number; name: string; body: string; }
-export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | RocketMsg | FallMsg | ChatMsg;
+// Buy-menu purchase (issue #26): request to buy + equip the weapon at index `weaponId`. The
+// server validates (match active + sender in-match + weapon buyable + affordable + not already
+// owned), deducts the cost, grants ownership, and replies with a `bought` (accepted) — an invalid
+// request is silently ignored (no reply).
+export interface BuyMsg { t: "buy"; weaponId: number; }
+export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | RocketMsg | FallMsg | ChatMsg | BuyMsg;
 
 // ---- Server -> Client ----
 // c = crouching, g = grenade count, a = armor, pc = parachute deployed.
@@ -291,12 +310,34 @@ export interface GrenadePickupMsg { t: "gpickup"; id: number; by: number; availa
 export interface HealthPickupMsg { t: "hpickup"; id: number; by: number; availableAt: number; } // health syringe taken
 export interface ArmorPickupMsg { t: "apickup"; id: number; by: number; availableAt: number; } // armor taken
 export interface SpringPickupMsg { t: "sppickup"; id: number; by: number; availableAt: number; durationMs: number; } // spring boots taken
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg | ChatMsg;
+// Buy-menu purchase confirmed (issue #26): sent only to the buyer. `weaponId` was granted +
+// equipped, `credits` is the new server-authoritative balance after the deduction.
+export interface BoughtMsg { t: "bought"; weaponId: number; credits: number; }
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg | ChatMsg | BoughtMsg;
 
 // Credits economy (issue #25): add `amount` to a balance, clamping into [0, CREDITS_CAP]. Pure so
 // both the server award path and unit tests share one definition (negative inputs floor at 0).
 export function addCredits(current: number, amount: number, cap: number = CREDITS_CAP): number {
   return Math.max(0, Math.min(cap, current + amount));
+}
+
+// Buy menu (issue #26): a fresh per-player ownership vector — one boolean per WEAPONS entry, with
+// only the free DEFAULT_WEAPON owned. Pure so the server (spawn / match start) and tests share it.
+// The Rocket launcher is a tower pickup tracked via PlayerRec.hasRocket, NOT this vector.
+export function defaultOwnedWeapons(): boolean[] {
+  return WEAPONS.map((w) => w.id === DEFAULT_WEAPON);
+}
+
+// Buy menu (issue #26): decide whether `weaponId` can be purchased given the buyer's current
+// credits and ownership vector. Pure + server-authoritative so the menu's "can I afford this"
+// gating and the server's deduction agree exactly. Rejects an unknown / non-buyable weapon, one
+// already owned, or an unaffordable price. The Rocket (a tower pickup) is `buyable:false`.
+export function canBuy(weaponId: number, credits: number, owned: readonly boolean[]): boolean {
+  if (weaponId < 0 || weaponId >= WEAPONS.length) return false;
+  const w = WEAPONS[weaponId]!;
+  if (!w.buyable) return false;
+  if (owned[weaponId]) return false;
+  return credits >= w.cost;
 }
 
 export function encode(msg: ServerMsg | ClientMsg): string { return JSON.stringify(msg); }

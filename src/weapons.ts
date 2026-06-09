@@ -2,7 +2,7 @@
 // switching (1/2), reload (R / auto), and aim-down-sights (right mouse → FOV zoom + scope).
 // Ammo is client-predicted for instant HUD feedback; the server enforces it authoritatively.
 import * as THREE from "three";
-import { WEAPONS, GRENADE_COOLDOWN_MS, ROCKET_ID, ROCKET_CLIP, type ShootMsg, type ReloadMsg, type ThrowMsg, type RocketMsg } from "../worker/protocol";
+import { WEAPONS, GRENADE_COOLDOWN_MS, ROCKET_ID, ROCKET_CLIP, defaultOwnedWeapons, type ShootMsg, type ReloadMsg, type ThrowMsg, type RocketMsg } from "../worker/protocol";
 import { fireRay, fireRocket, bumpSpread, decaySpread } from "./combat";
 import { clampZoomLevel, zoomMultiplier, zoomSensitivityScale, isScopeActive } from "./zoom";
 
@@ -41,6 +41,7 @@ export class WeaponController {
   private firing = false;   // left mouse button held
   private lastFireAt = 0;   // performance.now() of the last shot (client fire-rate gate)
   private hasRocket = false; // currently holding the rocket launcher (tower pickup)
+  private owned: boolean[] = defaultOwnedWeapons(); // buy menu (#26): which weapons can be switched to + fired
   private dead = false;     // local player is dead (block firing/throwing until respawn)
 
   private readonly onMouseDown: (e: MouseEvent) => void;
@@ -91,11 +92,24 @@ export class WeaponController {
     d.onWeapon(WEAPONS[0]!.name, 0);
   }
 
-  // The weapon ids the player can currently switch among (rocket only while held).
+  // The weapon ids the player can currently switch among: every OWNED catalog gun (buy menu, #26 —
+  // the Rifle is free, others are bought) plus the rocket launcher only while it's held (tower pickup).
   private availableWeapons(): number[] {
-    const list = [0, 1];
+    const list: number[] = [];
+    for (let w = 0; w < WEAPONS.length; w++) {
+      if (w === ROCKET_ID) continue; // the launcher is gated by hasRocket below, not ownership
+      if (this.owned[w]) list.push(w);
+    }
     if (this.hasRocket) list.push(ROCKET_ID);
     return list;
+  }
+
+  // Buy menu (#26): the server confirmed a purchase — mark the weapon owned and switch to it for
+  // instant feedback (the server already enforced affordability + ownership). Idempotent.
+  grantWeapon(id: number): void {
+    if (id < 0 || id >= WEAPONS.length || id === ROCKET_ID) return; // the rocket is a tower pickup
+    this.owned[id] = true;
+    this.switchTo(id);
   }
 
   // Cycle the current weapon by `dir` (+1 next / -1 prev) within the available set.
@@ -244,7 +258,11 @@ export class WeaponController {
 
   switchTo(id: number): void {
     if (id < 0 || id >= WEAPONS.length || id === this.cur) return;
-    if (id === ROCKET_ID && !this.hasRocket) return; // can't select a launcher you don't hold
+    if (id === ROCKET_ID) {
+      if (!this.hasRocket) return; // can't select a launcher you don't hold
+    } else if (!this.owned[id]) {
+      return; // buy menu (#26): can't select a gun you haven't purchased
+    }
     this.cur = id;
     this.currentSpread = WEAPONS[id]!.baseSpread; // fresh weapon → reset bloom
     // Carry the right-click hold across the switch: keep zoomed (level 1) on the new gun if the
@@ -259,6 +277,19 @@ export class WeaponController {
   refillReserve(): void {
     for (let w = 0; w < WEAPONS.length; w++) this.reserve[w] = WEAPONS[w]!.reserveAmmo;
     this.emit();
+  }
+
+  // Buy menu (#26): clear all purchased weapons back to the free starter (called at MATCH START,
+  // mirroring the server resetting ownedWeapons). Respawns within a match keep ownership (see
+  // reset(), which preserves `owned`). Drops back to the rifle if the held gun is no longer owned.
+  resetOwned(): void {
+    this.owned = defaultOwnedWeapons();
+    if (this.cur !== ROCKET_ID && !this.owned[this.cur]) this.switchTo(0); // fall back to the rifle
+  }
+
+  /** Which catalog weapons the local player currently owns (buy-menu affordability/UI; #26). */
+  getOwned(): readonly boolean[] {
+    return this.owned;
   }
 
   // Refill every weapon and reset to the rifle (called on (re)spawn). The rocket launcher is a
