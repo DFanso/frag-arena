@@ -11,6 +11,7 @@ const SAMPLE_URLS: Record<string, string> = {
   mortar: "/sfx/freesound_community-grenade-launcher-106342.mp3",
   outro: "/sfx/outro.mp3",
   hit: "/sfx/hit.mp3",
+  dryfire: "/sfx/freesound_community-empty-gun-shot-6209.mp3",
 };
 
 // Leading-edge debounce for the hit confirm: the first hit of a streak plays, and further hits
@@ -145,7 +146,7 @@ export class Sfx {
   }
 
   dryFire(): void {
-    this.blip("square", 120, 90, 0.10, 0.04);
+    if (!this.playSample("dryfire")) this.blip("square", 120, 90, 0.10, 0.04); // empty-gun click sample, else synth fallback
   }
 
   explosion(): void {
