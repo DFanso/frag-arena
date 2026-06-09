@@ -35,6 +35,7 @@ import type {
   ArmorPickupMsg,
   SpringPickupMsg,
   ChatMsg,
+  BoughtMsg,
 } from "../worker/protocol";
 import { Net } from "./net";
 import { buildArena, MINIMAP_BUILDINGS, ARENA_HALF } from "./map";
@@ -487,6 +488,8 @@ async function main(): Promise<void> {
         hud.setGrenades(ps.g ?? 0);
         hud.setArmor(ps.a ?? 0);
         hud.setCredits(ps.credits ?? 0); // server-authoritative credit balance (issue #25)
+        // Keep the buy menu's affordability in sync with the live balance + owned set (issue #26).
+        hud.setBuyState(ps.credits ?? 0, shootHandle?.getOwned() ?? []);
         // Latency: ack echoes the last input seq the server processed → RTT = now - its send time.
         const ackSeq = m.ack[myId];
         if (ackSeq !== undefined) {
@@ -649,6 +652,31 @@ async function main(): Promise<void> {
     },
   );
 
+  // Buy menu (issue #26): a confirmed purchase. The server already deducted credits + granted
+  // ownership; equip the weapon locally and reflect the new balance immediately (snapshots confirm).
+  net.on("bought", (m: BoughtMsg) => {
+    shootHandle?.grantWeapon(m.weaponId); // mark owned + switch to it
+    hud.setCredits(m.credits);
+    hud.setBuyState(m.credits, shootHandle?.getOwned() ?? []);
+    sfx.pickup();
+  });
+
+  // Wire the buy menu (B): ship the purchase to the server and pause pointer lock while open (so
+  // the cursor can click rows), re-locking on close — mirrors the chat input (#10). The server is
+  // authoritative for the deduction + grant; the menu only requests.
+  let wasLockedBeforeBuy = false;
+  hud.onBuy(
+    (weaponId) => net.send({ t: "buy", weaponId }),
+    (open) => {
+      if (open) {
+        wasLockedBeforeBuy = controls.isLocked;
+        if (controls.isLocked) controls.unlock();
+      } else if (wasLockedBeforeBuy) {
+        controls.lock();
+      }
+    },
+  );
+
   net.on("matchstart", (m: MatchStartMsg) => {
     matchEndsAt = m.endsAt;
     phase = "match";
@@ -669,6 +697,9 @@ async function main(): Promise<void> {
     hud.setArmor(0);
     hud.setSpring(0);
     hud.setCredits(STARTING_CREDITS); // instant feedback; snapshots then confirm (issue #25)
+    shootHandle?.resetOwned();        // back to the free starter; rebuy each match (issue #26)
+    hud.setBuyAvailable(true);        // the buy menu (B) is usable during the match
+    hud.setBuyState(STARTING_CREDITS, shootHandle?.getOwned() ?? []);
   });
 
   net.on("matchover", (m: MatchOverMsg) => {
@@ -676,6 +707,7 @@ async function main(): Promise<void> {
     deadUntil = 0;
     phase = "lobby";
     hud.hideDeath();
+    hud.setBuyAvailable(false); // no buying between matches (also closes the menu if open) (#26)
     controls.unlock(); // free the cursor for the lobby
     lobby.show();      // the lobby sits behind the results board (server also resent "lobby")
     sfx.playMusic("outro"); // game-over outro song (stops on Continue / next match)
@@ -741,9 +773,9 @@ async function main(): Promise<void> {
   let hasEverLocked = false;
   controls.onLockChange((locked: boolean) => {
     if (locked) { hasEverLocked = true; pauseOverlay.style.display = "none"; }
-    // Don't surface the pause menu when the unlock was caused by opening the chat input (#10) —
-    // chat re-locks on its own when done.
-    else if (hasEverLocked && !hud.chatInputActive) { pauseOverlay.style.display = "flex"; }
+    // Don't surface the pause menu when the unlock was caused by opening the chat input (#10) or
+    // the buy menu (#26) — each re-locks on its own when closed.
+    else if (hasEverLocked && !hud.chatInputActive && !hud.buyMenuOpen) { pauseOverlay.style.display = "flex"; }
   });
 
   // ---- resize --------------------------------------------------------------

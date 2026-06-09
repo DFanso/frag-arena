@@ -48,6 +48,8 @@ import {
   CREDITS_PER_HIT,
   CREDITS_PER_KILL,
   CREDITS_CAP,
+  DEFAULT_WEAPON,
+  defaultOwnedWeapons,
 } from "../worker/protocol";
 import type { GameRoom } from "../worker/room";
 import type {
@@ -411,6 +413,7 @@ function makeRec(
     rocketAmmo: number;
     armor: number;
     credits: number;
+    owned: boolean[];
   }> = {},
 ) {
   const ws = {} as unknown as WebSocket;
@@ -426,6 +429,7 @@ function makeRec(
     frags: 0,
     deaths: 0,
     credits: opts.credits ?? STARTING_CREDITS,
+    ownedWeapons: opts.owned ?? defaultOwnedWeapons(),
     lastShotAt: opts.lastShotAt ?? 0,
     lastInputAt: opts.lastInputAt ?? Date.now(),
     respawnAt: 0,
@@ -455,6 +459,7 @@ type RoomInternals = {
   broadcast: (m: unknown) => void;
   handleShoot: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
   handleChat: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
+  handleBuy: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
   loopTick: () => void;
   ingestInput: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
   applyDamage: (
@@ -1800,6 +1805,226 @@ describe("GameRoom credits economy (issue #25)", () => {
       const rec = makeRec(1, [0, 1, 0], { credits: 4321 });
       const snap = inst.snapOf(rec);
       expect(snap.credits).toBe(4321);
+    });
+  });
+});
+
+// ---- buy menu (issue #26) ----
+// The first buyable weapon in the catalog (the Sniper today). Picked generically so the tests
+// survive cost/id changes.
+const BUYABLE = WEAPONS.find((w) => w.buyable)!;
+
+describe("GameRoom buy menu (issue #26)", () => {
+  it("deducts the cost, grants ownership, and replies with a `bought` on a valid buy", async () => {
+    const stub = env.ROOMS.getByName("buy-valid");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        send: (ws: WebSocket, m: unknown) => void;
+        matchActive: boolean;
+      };
+      const sent: unknown[] = [];
+      inst.send = (_ws, m) => sent.push(m);
+      inst.matchActive = true;
+      const rec = makeRec(1, [0, 1, 0], { credits: BUYABLE.cost + 50, inMatch: true });
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+
+      inst.handleBuy(rec, { t: "buy", weaponId: BUYABLE.id });
+
+      expect(rec.ownedWeapons[BUYABLE.id]).toBe(true);
+      expect(rec.credits).toBe(50); // BUYABLE.cost deducted
+      const bought = sent.find((m) => (m as { t?: string }).t === "bought") as
+        | { t: string; weaponId: number; credits: number }
+        | undefined;
+      expect(bought).toBeDefined();
+      expect(bought!.weaponId).toBe(BUYABLE.id);
+      expect(bought!.credits).toBe(50);
+    });
+  });
+
+  it("rejects a buy the player can't afford (no deduction, no grant, no reply)", async () => {
+    const stub = env.ROOMS.getByName("buy-poor");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        send: (ws: WebSocket, m: unknown) => void;
+        matchActive: boolean;
+      };
+      const sent: unknown[] = [];
+      inst.send = (_ws, m) => sent.push(m);
+      inst.matchActive = true;
+      const rec = makeRec(1, [0, 1, 0], { credits: BUYABLE.cost - 1, inMatch: true });
+
+      inst.handleBuy(rec, { t: "buy", weaponId: BUYABLE.id });
+
+      expect(rec.ownedWeapons[BUYABLE.id]).toBe(false);
+      expect(rec.credits).toBe(BUYABLE.cost - 1); // untouched
+      expect(sent.length).toBe(0);                // no confirmation
+    });
+  });
+
+  it("rejects buying an already-owned weapon (can't pay twice)", async () => {
+    const stub = env.ROOMS.getByName("buy-owned");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        send: (ws: WebSocket, m: unknown) => void;
+        matchActive: boolean;
+      };
+      const sent: unknown[] = [];
+      inst.send = (_ws, m) => sent.push(m);
+      inst.matchActive = true;
+      const owned = defaultOwnedWeapons();
+      owned[BUYABLE.id] = true;
+      const rec = makeRec(1, [0, 1, 0], { credits: CREDITS_CAP, inMatch: true, owned });
+
+      inst.handleBuy(rec, { t: "buy", weaponId: BUYABLE.id });
+
+      expect(rec.credits).toBe(CREDITS_CAP); // not charged again
+      expect(sent.length).toBe(0);
+    });
+  });
+
+  it("rejects a buy in the lobby (no active match)", async () => {
+    const stub = env.ROOMS.getByName("buy-lobby");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        send: (ws: WebSocket, m: unknown) => void;
+        matchActive: boolean;
+      };
+      const sent: unknown[] = [];
+      inst.send = (_ws, m) => sent.push(m);
+      inst.matchActive = false; // lobby
+      const rec = makeRec(1, [0, 1, 0], { credits: CREDITS_CAP, inMatch: false });
+
+      inst.handleBuy(rec, { t: "buy", weaponId: BUYABLE.id });
+
+      expect(rec.ownedWeapons[BUYABLE.id]).toBe(false);
+      expect(rec.credits).toBe(CREDITS_CAP);
+      expect(sent.length).toBe(0);
+    });
+  });
+
+  it("rejects buying the rocket (a tower pickup, not buyable)", async () => {
+    const stub = env.ROOMS.getByName("buy-rocket");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        send: (ws: WebSocket, m: unknown) => void;
+        matchActive: boolean;
+      };
+      const sent: unknown[] = [];
+      inst.send = (_ws, m) => sent.push(m);
+      inst.matchActive = true;
+      const rec = makeRec(1, [0, 1, 0], { credits: CREDITS_CAP, inMatch: true });
+
+      inst.handleBuy(rec, { t: "buy", weaponId: ROCKET_ID });
+
+      expect(rec.ownedWeapons[ROCKET_ID]).toBe(false);
+      expect(rec.credits).toBe(CREDITS_CAP);
+      expect(sent.length).toBe(0);
+    });
+  });
+
+  it("handleShoot rejects a shot from an UNOWNED weapon (no client-trusted m.w)", async () => {
+    const stub = env.ROOMS.getByName("buy-shoot-gate");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      // Shooter owns ONLY the default rifle; fires the (unowned) buyable weapon.
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 5000 });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: BUYABLE.id, hit: 2, head: false,
+      });
+
+      expect(target.hp).toBe(MAX_HP);          // no damage — the gun never fired
+      expect(shooter.lastShotAt).toBe(now - 5000); // gun did not discharge
+    });
+  });
+
+  it("handleShoot fires an OWNED bought weapon and damages the target", async () => {
+    const stub = env.ROOMS.getByName("buy-shoot-owned");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const owned = defaultOwnedWeapons();
+      owned[BUYABLE.id] = true; // bought it
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 5000, owned });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: BUYABLE.id, hit: 2, head: false,
+      });
+
+      expect(target.hp).toBeLessThan(MAX_HP); // owned weapon fired + dealt damage (per-limb amount unit-tested)
+      expect(shooter.lastShotAt).toBeGreaterThanOrEqual(now);
+    });
+  });
+
+  it("the default rifle (DEFAULT_WEAPON) fires without any purchase", async () => {
+    const stub = env.ROOMS.getByName("buy-default-fires");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 5000 });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: DEFAULT_WEAPON, hit: 2, head: false,
+      });
+
+      expect(target.hp).toBeLessThan(MAX_HP); // default rifle fired without a purchase (per-limb amount unit-tested)
+    });
+  });
+
+  it("startMatch resets ownership back to the free starter (rebuy each match)", async () => {
+    const stub = env.ROOMS.getByName("buy-reset");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & { startMatch: () => void };
+      inst.broadcast = () => {};
+      const owned = defaultOwnedWeapons();
+      owned[BUYABLE.id] = true;
+      const a = makeRec(1, [0, 1, 0], { owned });
+      a.ready = true;
+      inst.byId.set(1, a);
+      inst.players.set(a.ws, a);
+
+      inst.startMatch();
+
+      expect(a.ownedWeapons[DEFAULT_WEAPON]).toBe(true);
+      expect(a.ownedWeapons[BUYABLE.id]).toBe(false); // lost the purchase at match start
+    });
+  });
+
+  it("routes a `buy` ClientMsg through webSocketMessage to handleBuy", async () => {
+    const stub = env.ROOMS.getByName("buy-route");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        send: (ws: WebSocket, m: unknown) => void;
+        matchActive: boolean;
+      };
+      const sent: unknown[] = [];
+      inst.send = (_ws, m) => sent.push(m);
+      inst.matchActive = true;
+      const ws = { close: () => {}, send: () => {} } as unknown as WebSocket;
+      const rec = makeRec(1, [0, 1, 0], { credits: BUYABLE.cost, inMatch: true });
+      rec.ws = ws;
+      inst.players.set(ws, rec);
+      inst.byId.set(1, rec);
+
+      inst.webSocketMessage(ws, JSON.stringify({ t: "buy", weaponId: BUYABLE.id }));
+
+      expect(rec.ownedWeapons[BUYABLE.id]).toBe(true);
+      expect(rec.credits).toBe(0);
+      expect(sent.some((m) => (m as { t?: string }).t === "bought")).toBe(true);
     });
   });
 });
