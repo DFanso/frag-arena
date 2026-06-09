@@ -1,6 +1,6 @@
 // src/hud.ts — HUD overlay: crosshair, health bar, prompt, scoreboard, kill feed, hit marker.
-import { MAX_HP, MAX_ARMOR, SPRING_DURATION_MS, ST_DEAD, CHAT_HISTORY, CHAT_MAX_LEN } from "../worker/protocol";
-import type { PlayerSnap, KillMsg, ChatMsg, Standing, Vec3 } from "../worker/protocol";
+import { MAX_HP, MAX_ARMOR, SPRING_DURATION_MS, ST_DEAD, CHAT_HISTORY, CHAT_MAX_LEN, WEAPONS, canBuy } from "../worker/protocol";
+import type { PlayerSnap, KillMsg, ChatMsg, Standing, Vec3, Weapon } from "../worker/protocol";
 import { countdownText, deathMessage } from "./death-ui";
 import { formatClock } from "./match-ui";
 import { playerColor } from "./colors";
@@ -42,6 +42,27 @@ export function crosshairGapPx(spreadNdc: number): number {
 export function formatCredits(credits: number): string {
   const n = Math.max(0, Math.floor(credits));
   return "$" + n.toLocaleString("en-US");
+}
+
+/** A buy-menu row's display state (issue #26): the weapon plus whether it's owned / affordable. */
+export interface BuyOption {
+  weapon: Weapon;
+  owned: boolean;
+  affordable: boolean; // can be purchased right now (not owned + enough credits)
+}
+
+/**
+ * Pure (issue #26): build the buy-menu option list from the player's credits + ownership. Lists
+ * only the catalog's `buyable` weapons (the free Rifle and the tower-pickup Rocket are excluded),
+ * in catalog order, tagging each as owned and/or affordable so the UI can disable/grey rows. The
+ * affordability check reuses the server's `canBuy`, so the menu and the server agree exactly.
+ */
+export function buyOptions(credits: number, owned: readonly boolean[]): BuyOption[] {
+  return WEAPONS.filter((w) => w.buyable).map((w) => ({
+    weapon: w,
+    owned: !!owned[w.id],
+    affordable: canBuy(w.id, credits, owned),
+  }));
 }
 
 /**
@@ -182,6 +203,20 @@ export class Hud {
   private deathCount!: HTMLDivElement;
   private matchTimerEl!: HTMLDivElement;
   private resultsEl!: HTMLDivElement;
+
+  // Buy menu (issue #26): a B-toggled overlay listing the buyable weapons with cost + affordability.
+  // Body-level (like the results board) so it sits above the HUD; opening it frees the pointer lock
+  // (the host re-locks on close, like the chat input). `onBuyCb` ships the purchase request; the
+  // server is authoritative (it deducts credits + grants the weapon and replies with `bought`).
+  private buyMenuEl!: HTMLDivElement;
+  private buyGridEl!: HTMLDivElement;
+  private buyCreditsEl!: HTMLSpanElement;
+  private buyOpen = false;
+  private buyAvailable = false;     // only openable during a live match (host toggles via setBuyAvailable)
+  private buyCredits = 0;            // last-known local balance (refreshed from snapshots)
+  private buyOwned: readonly boolean[] = [];
+  private onBuyCb?: (weaponId: number) => void;   // host sends the BuyMsg
+  private onBuyToggleCb?: (open: boolean) => void; // host pauses/restores pointer lock
   private minimapWrap!: HTMLDivElement;
   private minimapCanvas!: HTMLCanvasElement;
   private minimapCtx!: CanvasRenderingContext2D | null;
@@ -372,7 +407,7 @@ export class Hud {
     prompt.style.cssText =
       "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
       "background:rgba(0,0,0,.55);color:#fff;font-size:24px;text-align:center;";
-    prompt.textContent = "Click to play  ·  WASD move · Shift sprint · Ctrl/C crouch · Space jump · Hold to fire · Right-click aim · R reload · Wheel/1·2·3 weapon · G grenade · E parachute · F zipline · M map · N map-mode · Grab the rocket launcher atop the tower · Tab scores";
+    prompt.textContent = "Click to play  ·  WASD move · Shift sprint · Ctrl/C crouch · Space jump · Hold to fire · Right-click aim · R reload · Wheel/1·2·3 weapon · G grenade · B buy · E parachute · F zipline · M map · N map-mode · Grab the rocket launcher atop the tower · Tab scores";
     root.appendChild(prompt);
     this.prompt = prompt;
 
@@ -478,6 +513,34 @@ export class Hud {
       "justify-content:center;gap:16px;background:rgba(0,0,0,.86);color:#fff;" +
       "font-family:monospace;pointer-events:auto;z-index:45;";
     parent.appendChild(this.resultsEl);
+
+    // Buy menu overlay (issue #26): a centered panel with a title, the live credit balance, and a
+    // grid of buyable weapons. Interactive (each row is a button) + body-level (above the HUD),
+    // hidden until B (see toggleBuyMenu). Built once; populated by renderBuyMenu.
+    this.buyMenuEl = document.createElement("div");
+    this.buyMenuEl.style.cssText =
+      "position:fixed;inset:0;display:none;flex-direction:column;align-items:center;" +
+      "justify-content:center;gap:14px;background:rgba(4,8,16,.82);color:#fff;" +
+      "font-family:monospace;pointer-events:auto;z-index:44;";
+    const buyTitle = document.createElement("div");
+    buyTitle.textContent = "BUY MENU";
+    buyTitle.style.cssText = "font:700 30px monospace;letter-spacing:3px;";
+    const buyBalance = document.createElement("div");
+    buyBalance.style.cssText = "font:600 16px monospace;color:#ffd54a;";
+    buyBalance.innerHTML = 'Credits: <span>' + formatCredits(0) + "</span>";
+    this.buyCreditsEl = buyBalance.querySelector("span") as HTMLSpanElement;
+    this.buyGridEl = document.createElement("div");
+    this.buyGridEl.style.cssText =
+      "display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;" +
+      "max-width:620px;width:90%;";
+    const buyHint = document.createElement("div");
+    buyHint.textContent = "Press B or Esc to close";
+    buyHint.style.cssText = "font:13px monospace;opacity:.6;";
+    this.buyMenuEl.appendChild(buyTitle);
+    this.buyMenuEl.appendChild(buyBalance);
+    this.buyMenuEl.appendChild(this.buyGridEl);
+    this.buyMenuEl.appendChild(buyHint);
+    parent.appendChild(this.buyMenuEl);
 
     parent.appendChild(root);
     this.root = root;
@@ -855,6 +918,89 @@ export class Hud {
     this.resultsEl.style.display = "none";
   }
 
+  // ---- buy menu (issue #26) ----
+
+  /**
+   * Register the buy-menu hooks: `onBuy(weaponId)` ships the purchase request to the server, and
+   * `onToggle(open)` lets the host release pointer lock while the menu is open and re-lock on close
+   * (mirrors the chat input). Call once at startup.
+   */
+  onBuy(onBuy: (weaponId: number) => void, onToggle?: (open: boolean) => void): void {
+    this.onBuyCb = onBuy;
+    this.onBuyToggleCb = onToggle;
+  }
+
+  /** True while the buy menu is open (the host suppresses re-lock / pause-menu like chat). */
+  get buyMenuOpen(): boolean {
+    return this.buyOpen;
+  }
+
+  /** Update the cached balance + ownership that drive buy-menu affordability; live-refresh if open. */
+  setBuyState(credits: number, owned: readonly boolean[]): void {
+    this.buyCredits = credits;
+    this.buyOwned = owned;
+    if (this.buyOpen) this.renderBuyMenu();
+  }
+
+  /** Enable/disable the buy menu (host toggles on match start/over). Disabling also closes it. */
+  setBuyAvailable(available: boolean): void {
+    this.buyAvailable = available;
+    if (!available) this.closeBuyMenu();
+  }
+
+  /** Toggle the buy menu (bound to B). Opening frees the pointer lock; closing restores it. */
+  toggleBuyMenu(): void {
+    if (this.buyOpen) this.closeBuyMenu();
+    else this.openBuyMenu();
+  }
+
+  private openBuyMenu(): void {
+    if (this.buyOpen || !this.buyAvailable) return; // only during a live match
+    this.buyOpen = true;
+    this.renderBuyMenu();
+    this.buyMenuEl.style.display = "flex";
+    this.onBuyToggleCb?.(true); // host releases pointer lock so the cursor can click rows
+  }
+
+  /** Close the buy menu (B again, Esc, or after a purchase). Safe to call when already closed. */
+  closeBuyMenu(): void {
+    if (!this.buyOpen) return;
+    this.buyOpen = false;
+    this.buyMenuEl.style.display = "none";
+    this.onBuyToggleCb?.(false); // host re-locks pointer if it was locked
+  }
+
+  // Rebuild the weapon grid from the cached credits + ownership. Owned rows show "OWNED";
+  // affordable rows are clickable (send the buy); unaffordable rows are greyed + disabled.
+  private renderBuyMenu(): void {
+    this.buyCreditsEl.textContent = formatCredits(this.buyCredits);
+    this.buyGridEl.innerHTML = "";
+    for (const opt of buyOptions(this.buyCredits, this.buyOwned)) {
+      const card = document.createElement("button");
+      const state = opt.owned ? "owned" : opt.affordable ? "buy" : "poor";
+      const border = state === "owned" ? "#3c9" : state === "buy" ? "#ffd54a" : "#555";
+      card.disabled = !opt.affordable;
+      card.style.cssText =
+        "display:flex;flex-direction:column;gap:6px;padding:12px 14px;text-align:left;" +
+        `background:rgba(255,255,255,.05);border:1px solid ${border};border-radius:6px;` +
+        "color:#fff;font-family:monospace;" +
+        (opt.affordable ? "cursor:pointer;" : "cursor:default;opacity:" + (opt.owned ? ".75" : ".45") + ";");
+      const label = opt.owned ? "OWNED" : formatCredits(opt.weapon.cost);
+      const labelColor = opt.owned ? "#7CFC9A" : opt.affordable ? "#ffd54a" : "#e88";
+      card.innerHTML =
+        `<div style="font:700 17px monospace">${escapeHtml(opt.weapon.name)}</div>` +
+        `<div style="font:600 14px monospace;color:${labelColor}">${label}</div>` +
+        `<div style="font:12px monospace;opacity:.6">DMG ${opt.weapon.damage} · ${opt.weapon.clipSize}-round</div>`;
+      if (opt.affordable) {
+        card.onclick = () => {
+          this.onBuyCb?.(opt.weapon.id); // server validates + replies with `bought`
+          this.closeBuyMenu();            // close so play resumes; the purchase confirms via snapshot
+        };
+      }
+      this.buyGridEl.appendChild(card);
+    }
+  }
+
   /** Detach listeners and remove the overlay (for teardown/tests). */
   dispose(): void {
     window.removeEventListener("keydown", this.onKeyDown);
@@ -866,6 +1012,7 @@ export class Hud {
     if (this.dirTimer !== undefined) clearTimeout(this.dirTimer);
     this.root.remove();
     this.resultsEl.remove();
+    this.buyMenuEl.remove();
   }
 
   // Chat input key handling (issue #10): Enter sends + closes, Esc cancels + closes. Stop
@@ -887,6 +1034,19 @@ export class Hud {
     // While the chat input is focused, swallow everything (its own listener handles Enter/Esc) so
     // keystrokes don't leak into movement / minimap / scoreboard toggles.
     if (this.chatOpen) return;
+    // Buy menu (issue #26): B toggles it; Esc closes it while open (so the cursor returns to play
+    // without surfacing the pause menu). Both are pointer-unlock–safe (the host manages the lock).
+    if (this.buyOpen && e.code === "Escape") {
+      e.preventDefault();
+      this.closeBuyMenu();
+      return;
+    }
+    if (e.code === "KeyB") {
+      e.preventDefault();
+      this.toggleBuyMenu();
+      return;
+    }
+    if (this.buyOpen) return; // while the menu is open, swallow other game keys (T/M/N/Tab)
     if (e.code === "KeyT") {                  // open the chat input (pointer-unlock–safe)
       e.preventDefault();
       this.openChat();
