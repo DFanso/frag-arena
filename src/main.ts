@@ -611,6 +611,7 @@ async function main(): Promise<void> {
     matchEndsAt = m.endsAt;
     phase = "match";
     lobby.hide();
+    sfx.stopMusic(); // cut the outro if a new match starts
     hud.hideResults();
     hud.hideDeath();
     deadUntil = 0;
@@ -634,8 +635,9 @@ async function main(): Promise<void> {
     hud.hideDeath();
     controls.unlock(); // free the cursor for the lobby
     lobby.show();      // the lobby sits behind the results board (server also resent "lobby")
+    sfx.playMusic("outro"); // game-over outro song (stops on Continue / next match)
     // Results board on top; closing it reveals the lobby to ready up for the next match.
-    hud.showResults(m.standings, myId, () => hud.hideResults());
+    hud.showResults(m.standings, myId, () => { sfx.stopMusic(); hud.hideResults(); });
   });
 
   // ---- weapons (fire / reload / switch / ADS — single owner) ----------------
@@ -649,8 +651,9 @@ async function main(): Promise<void> {
     nextSeq: () => (local ? local.nextSeq() : 0),
     send: (m) => net.send(m),
     baseFov: camera.fov,
-    onLocalShoot: (hit) => {
-      sfx.shoot();
+    onLocalShoot: (hit, weaponId) => {
+      // sniper (id 1) → its fire+reload clip; rocket launcher / "mortar" (id 2) → launcher thump; else machine-gun.
+      sfx.shoot(weaponId === 1 ? "sniper" : weaponId === 2 ? "mortar" : "shoot");
       viewmodel.recoil();
       viewmodel.flash();
       if (hit) hud.flashHitMarker();
@@ -659,7 +662,7 @@ async function main(): Promise<void> {
     onWeapon: (name, id) => { hud.setWeapon(name); viewmodel.setWeapon(id); },
     onScope: (active) => hud.setScope(active),
     onRocket: (has) => hud.setRocket(has),
-    sfx: { shoot: () => sfx.shoot(), reload: () => sfx.reload(), dryFire: () => sfx.dryFire() },
+    sfx: { shoot: () => sfx.shoot(), reload: (ms) => sfx.reload(ms), dryFire: () => sfx.dryFire() },
   });
 
   // ---- Esc pause / settings overlay ---------------------------------------
