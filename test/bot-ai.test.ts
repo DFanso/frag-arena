@@ -4,6 +4,9 @@ import {
   botShouldFire,
   botHits,
   botMove,
+  hasLineOfSight,
+  canSee,
+  visibleEnemy,
   newBotState,
   type Combatant,
   type BotState,
@@ -18,7 +21,9 @@ import {
   BOT_REACTION_MS,
   BOT_MOVE_SPEED,
   BOT_BOUND,
+  BOT_VISION_RANGE,
   type Vec3,
+  type Rect,
 } from "../worker/protocol";
 
 const rifle = WEAPONS[0]!;
@@ -155,5 +160,84 @@ describe("botMove", () => {
     const { p } = botMove(st, self, target, 1000, dt, rand);
     const moved = Math.hypot(p[0] - self[0], p[2] - self[2]);
     expect(moved).toBeLessThanOrEqual(BOT_MOVE_SPEED * dt + 1e-6);
+  });
+});
+
+describe("hasLineOfSight", () => {
+  const from: Vec3 = [0, EYE_HEIGHT, 0];
+  const to: Vec3 = [0, EYE_HEIGHT, 40];
+
+  it("is clear when there are no occluders", () => {
+    expect(hasLineOfSight(from, to, [])).toBe(true);
+  });
+
+  it("is blocked by an occluder straddling the sightline", () => {
+    const wall: Rect = { x: 0, z: 20, w: 6, d: 6 };
+    expect(hasLineOfSight(from, to, [wall])).toBe(false);
+  });
+
+  it("is clear when the occluder is off to the side", () => {
+    const wall: Rect = { x: 30, z: 20, w: 6, d: 6 };
+    expect(hasLineOfSight(from, to, [wall])).toBe(true);
+  });
+
+  it("is clear when the occluder lies beyond the target (segment never reaches it)", () => {
+    const wall: Rect = { x: 0, z: 80, w: 6, d: 6 };
+    expect(hasLineOfSight(from, to, [wall])).toBe(true);
+  });
+});
+
+describe("canSee", () => {
+  const self: Vec3 = [0, EYE_HEIGHT, 0];
+  const yawFacingPlusZ = Math.PI; // forward (-sinθ,-cosθ) = (0,1)
+  const ahead: Vec3 = [0, EYE_HEIGHT, 40];
+
+  it("sees a target in front, in range, with a clear line", () => {
+    expect(canSee(self, yawFacingPlusZ, ahead, [])).toBe(true);
+  });
+
+  it("cannot see a target behind it (outside the view cone)", () => {
+    expect(canSee(self, yawFacingPlusZ, [0, EYE_HEIGHT, -40], [])).toBe(false);
+  });
+
+  it("cannot see a target beyond the vision range", () => {
+    expect(canSee(self, yawFacingPlusZ, [0, EYE_HEIGHT, BOT_VISION_RANGE + 10], [])).toBe(false);
+  });
+
+  it("cannot see a target hidden behind an occluder", () => {
+    expect(canSee(self, yawFacingPlusZ, ahead, [{ x: 0, z: 20, w: 6, d: 6 }])).toBe(false);
+  });
+});
+
+describe("visibleEnemy", () => {
+  const self: Vec3 = [0, EYE_HEIGHT, 0];
+  const yaw = Math.PI; // faces +z
+
+  it("returns the nearest visible enemy", () => {
+    const out = visibleEnemy(1, self, yaw, [
+      combatant(1, self),
+      combatant(2, [0, EYE_HEIGHT, 50]),
+      combatant(3, [0, EYE_HEIGHT, 20]),
+    ], []);
+    expect(out).toBe(3);
+  });
+
+  it("ignores an enemy hidden behind a wall (picks the visible one instead)", () => {
+    const wall: Rect = { x: 0, z: 10, w: 6, d: 6 }; // blocks the closer enemy at z=20
+    const out = visibleEnemy(1, self, yaw, [
+      combatant(2, [0, EYE_HEIGHT, 20]),  // behind the wall
+      combatant(3, [20, EYE_HEIGHT, 30]), // off-axis, clear line
+    ], [wall]);
+    expect(out).toBe(3);
+  });
+
+  it("ignores enemies outside the view cone", () => {
+    const out = visibleEnemy(1, self, yaw, [combatant(2, [0, EYE_HEIGHT, -30])], []);
+    expect(out).toBeNull();
+  });
+
+  it("returns null when the only enemy is occluded", () => {
+    const out = visibleEnemy(1, self, yaw, [combatant(2, [0, EYE_HEIGHT, 40])], [{ x: 0, z: 20, w: 8, d: 8 }]);
+    expect(out).toBeNull();
   });
 });

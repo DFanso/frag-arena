@@ -20,6 +20,7 @@ import {
   ZONE_CHEST,
   MAX_BOTS,
   BOT_ACCURACY,
+  OCCLUDERS,
   SPAWN_POINTS,
   IDLE_TIMEOUT_MS,
   RECONNECT_GRACE_MS,
@@ -117,7 +118,7 @@ import type {
 } from "./protocol";
 import { validateShoot, chooseSpawn, hitZone, zoneDamageMultiplier } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
-import { newBotState, nearestEnemy, botMove, botShouldFire, botHits, type BotState } from "./bot-ai";
+import { newBotState, visibleEnemy, botMove, botShouldFire, botHits, type BotState } from "./bot-ai";
 
 interface PlayerRec {
   id: number;
@@ -428,7 +429,9 @@ export class GameRoomCore {
     for (const rec of this.players.values()) {
       const bs = rec.bot;
       if (!bs || !rec.inMatch || rec.st === ST_DEAD) continue;
-      const targetId = nearestEnemy(rec.id, rec.p, view);
+      // Bots only perceive enemies inside their view cone + range with a clear line of sight —
+      // an occluded or out-of-view player is ignored (no shooting through walls; issue #31).
+      const targetId = visibleEnemy(rec.id, rec.p, rec.r[0], view, OCCLUDERS);
       if (targetId !== bs.targetId) { bs.targetId = targetId; bs.engagedAt = now; } // reaction resets on a new target
       const targetRec = targetId !== null ? this.byId.get(targetId) : undefined;
       const move = botMove(bs, rec.p, targetRec ? targetRec.p : null, now, dt, Math.random);

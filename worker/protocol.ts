@@ -56,6 +56,23 @@ export const BOT_MOVE_SPEED = 6;                          // bot travel speed (u
 export const BOT_PREFERRED_RANGE = 28;                    // bots try to hold roughly this distance from a target
 export const BOT_WANDER_INTERVAL_MS = 2000;               // re-pick a wander heading this often when no target
 export const BOT_BOUND = 110;                             // soft arena bound bots stay within (walls are at ±120)
+export const BOT_VISION_RANGE = 90;                       // a bot can only perceive targets within this distance
+export const BOT_FOV_DOT = Math.cos((70 * Math.PI) / 180); // 140° view cone: a target must be within ±70° of facing
+
+// Major sight-blocking structures as XZ rectangles (center x/z + full width/depth), used for the
+// bots' server-side line-of-sight test (the server has no scene geometry). All of these are far
+// taller than eye height, so a 2-D XZ occlusion test is correct for ground players. Mirrors the
+// `home(...)` and `ladderTower(...)` placements in src/map.ts. Small cover (crates/logs/containers)
+// is intentionally omitted — it doesn't reliably block a standing sightline.
+export interface Rect { x: number; z: number; w: number; d: number; }
+export const OCCLUDERS: readonly Rect[] = [
+  { x: 62, z: 0, w: 18, d: 18 }, { x: -62, z: 0, w: 16, d: 16 },
+  { x: 0, z: 62, w: 18, d: 18 }, { x: 0, z: -62, w: 16, d: 16 },
+  { x: 62, z: 62, w: 16, d: 16 }, { x: -62, z: -62, w: 18, d: 18 },
+  { x: 0, z: 0, w: 5, d: 5 },     // CENTER_TOWER
+  { x: 56, z: -56, w: 5, d: 5 },  // ROCKET_TOWER
+  { x: -56, z: 56, w: 5, d: 5 },  // WATCH_TOWER
+];
 
 // --- Ammo pickups (refill reserve by walking over a crate) ---
 export const PICKUP_RADIUS = 2.6;          // pick up within this XZ distance

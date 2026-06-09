@@ -11,8 +11,11 @@ import {
   BOT_PREFERRED_RANGE,
   BOT_WANDER_INTERVAL_MS,
   BOT_BOUND,
+  BOT_VISION_RANGE,
+  BOT_FOV_DOT,
   type Vec3,
   type Weapon,
+  type Rect,
 } from "./protocol";
 
 // Per-bot scratchpad held on the PlayerRec (game-core mutates it across ticks).
@@ -86,6 +89,75 @@ export function botShouldFire(
 /** Per-shot hit roll: true when rand() falls under the configured accuracy. */
 export function botHits(rand: () => number, accuracy: number): boolean {
   return rand() < accuracy;
+}
+
+// 2-D (XZ) segment-vs-rectangle test via Liang–Barsky. Returns true if the segment a→b touches
+// the axis-aligned rect (endpoints inside count). Used for line-of-sight occlusion.
+export function segmentIntersectsRect(ax: number, az: number, bx: number, bz: number, r: Rect): boolean {
+  const minX = r.x - r.w / 2, maxX = r.x + r.w / 2;
+  const minZ = r.z - r.d / 2, maxZ = r.z + r.d / 2;
+  const dx = bx - ax, dz = bz - az;
+  let t0 = 0, t1 = 1;
+  const edges: Array<[number, number]> = [
+    [-dx, ax - minX], [dx, maxX - ax],
+    [-dz, az - minZ], [dz, maxZ - az],
+  ];
+  for (const [p, q] of edges) {
+    if (p === 0) {
+      if (q < 0) return false; // parallel and outside this slab
+    } else {
+      const t = q / p;
+      if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+      else { if (t < t0) return false; if (t < t1) t1 = t; }
+    }
+  }
+  return t0 <= t1;
+}
+
+/** True if no occluder blocks the XZ sightline from `from` to `to`. */
+export function hasLineOfSight(from: Vec3, to: Vec3, occluders: readonly Rect[]): boolean {
+  for (const r of occluders) {
+    if (segmentIntersectsRect(from[0], from[2], to[0], to[2], r)) return false;
+  }
+  return true;
+}
+
+/**
+ * Can the bot see `targetPos`? Requires: within BOT_VISION_RANGE, inside the view cone (BOT_FOV_DOT
+ * of the bot's facing), and an unobstructed line of sight past the occluders. This is what gates a
+ * bot's awareness — a target it can't see is ignored entirely (no shooting through walls).
+ */
+export function canSee(selfPos: Vec3, selfYaw: number, targetPos: Vec3, occluders: readonly Rect[]): boolean {
+  const dx = targetPos[0] - selfPos[0];
+  const dz = targetPos[2] - selfPos[2];
+  const horiz = Math.hypot(dx, dz);
+  if (horiz > BOT_VISION_RANGE) return false;
+  if (horiz > 1e-6) {
+    const dot = -Math.sin(selfYaw) * (dx / horiz) + -Math.cos(selfYaw) * (dz / horiz);
+    if (dot < BOT_FOV_DOT) return false; // outside the view cone
+  }
+  return hasLineOfSight(selfPos, targetPos, occluders);
+}
+
+/** Nearest living, in-match enemy the bot can actually see (range + view cone + line of sight); null if none. */
+export function visibleEnemy(
+  selfId: number,
+  selfPos: Vec3,
+  selfYaw: number,
+  others: Combatant[],
+  occluders: readonly Rect[],
+): number | null {
+  let best: number | null = null;
+  let bestD = Infinity;
+  for (const o of others) {
+    if (o.id === selfId || !o.inMatch || o.st !== ST_ALIVE) continue;
+    if (!canSee(selfPos, selfYaw, o.p, occluders)) continue;
+    const dx = o.p[0] - selfPos[0];
+    const dz = o.p[2] - selfPos[2];
+    const d = dx * dx + dz * dz;
+    if (d < bestD) { bestD = d; best = o.id; }
+  }
+  return best;
 }
 
 export interface BotMove { p: Vec3; yaw: number; v: Vec3; }
