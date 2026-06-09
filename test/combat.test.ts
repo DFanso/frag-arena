@@ -1,6 +1,7 @@
 // test/combat.test.ts
 import { describe, it, expect } from "vitest";
 import { findPlayerId, isHead, HEAD_THRESHOLD, bumpSpread, decaySpread, SPREAD_BLOOM_MAX, SPREAD_DECAY_PER_SEC } from "../src/combat";
+import { WEAPONS } from "../worker/protocol";
 
 // Minimal mock matching the bits of THREE.Object3D that findPlayerId reads.
 interface MockObj {
@@ -82,5 +83,23 @@ describe("aim spread / bloom (issue #20)", () => {
   it("decaySpread with zero dt is a no-op above base", () => {
     const base = 0.006;
     expect(decaySpread(0.02, base, 0)).toBe(0.02);
+  });
+});
+
+describe("rifle bloom accumulates under sustained auto fire (review fix #20)", () => {
+  it("per-shot growth exceeds the decay over one rifle cooldown (bloom is real, not a no-op)", () => {
+    const rifle = WEAPONS[0]!;
+    const decayPerCycle = SPREAD_DECAY_PER_SEC * (rifle.cooldownMs / 1000);
+    expect(rifle.sprayGrowth).toBeGreaterThan(decayPerCycle);
+  });
+  it("rifle spread climbs well above base over a burst (decay then bump per cooldown)", () => {
+    const rifle = WEAPONS[0]!;
+    let s = rifle.baseSpread;
+    for (let i = 0; i < 10; i++) {
+      s = decaySpread(s, rifle.baseSpread, rifle.cooldownMs);
+      s = bumpSpread(s, rifle.baseSpread, rifle.sprayGrowth);
+    }
+    expect(s).toBeGreaterThan(rifle.baseSpread + 0.02);
+    expect(s).toBeLessThanOrEqual(rifle.baseSpread + SPREAD_BLOOM_MAX);
   });
 });

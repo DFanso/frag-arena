@@ -10,7 +10,7 @@ export const IDLE_TIMEOUT_MS = 30_000;
 export const RECONNECT_GRACE_MS = 30_000; // a dropped player's identity (id/score/in-match) is restorable by token for this long
 export const MAX_MESSAGE_BYTES = 1024;                    // app-level cap (platform max is 32 MiB)
 export const RATE_LIMIT_MSGS_PER_SEC = 40;                // per connection
-export const WS_CONN_LIMIT_PER_IP = 12;                   // max WebSocket upgrades one IP may open per WS_CONN_WINDOW_MS
+export const WS_CONN_LIMIT_PER_IP = 32;                   // max WebSocket upgrades one IP may open per WS_CONN_WINDOW_MS (above realistic NAT/CGNAT shared-IP concurrency so only true floods trip)
 export const WS_CONN_WINDOW_MS = 60_000;                  // sliding window for the per-IP connection cap (1 minute)
 export const RESPAWN_MS = 3000;
 export const SPAWN_PROTECTION_MS = 2500;
@@ -242,7 +242,7 @@ export interface Weapon {
 // (PlayerRec.rocketAmmo), not through the magazine/reserve system, and its blast uses ROCKET_*.
 export const WEAPONS: readonly Weapon[] = [
   // master balance (Sniper 150/3000, Rifle reserve 10) + #28 zoomLevels + #20 spread + #26 cost/buyable.
-  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 10, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.004, cost: 0, buyable: false },
+  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 10, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.02, cost: 0, buyable: false },
   { id: 1, name: "Sniper", damage: 150, headMult: 2, maxRange: 320, cooldownMs: 3000, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, zoomLevels: [1, 0.4, 0.2], auto: false, baseSpread: 0.001, sprayGrowth: 0.002, cost: 1500, buyable: true },
   { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, zoomLevels: [1, 0.92], auto: false, baseSpread: 0, sprayGrowth: 0, cost: 0, buyable: false },
 ];
@@ -334,7 +334,10 @@ export function defaultOwnedWeapons(): boolean[] {
 // gating and the server's deduction agree exactly. Rejects an unknown / non-buyable weapon, one
 // already owned, or an unaffordable price. The Rocket (a tower pickup) is `buyable:false`.
 export function canBuy(weaponId: number, credits: number, owned: readonly boolean[]): boolean {
-  if (weaponId < 0 || weaponId >= WEAPONS.length) return false;
+  // Reject non-integer / out-of-range ids first: a crafted {t:"buy",weaponId:1.5} otherwise passes
+  // the range check and WEAPONS[1.5] is undefined → a throw that crashes the DO / Node process from
+  // the unguarded routeMessage path (remote DoS). Number.isInteger closes it (review fix #26).
+  if (!Number.isInteger(weaponId) || weaponId < 0 || weaponId >= WEAPONS.length) return false;
   const w = WEAPONS[weaponId]!;
   if (!w.buyable) return false;
   if (owned[weaponId]) return false;
