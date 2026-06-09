@@ -7,6 +7,7 @@ const SAMPLE_URLS: Record<string, string> = {
   sniper: "/sfx/sniper.mp3",
   reload_start: "/sfx/reload_start.mp3",
   reload_end: "/sfx/reload_end.mp3",
+  explosion: "/sfx/flutie8211-bomb-and-echo-2-540400.mp3",
 };
 
 export class Sfx {
@@ -112,7 +113,7 @@ export class Sfx {
   }
 
   explosion(): void {
-    this.blip("sawtooth", 200, 36, 0.4, 0.38);
+    if (!this.playSample("explosion")) this.blip("sawtooth", 200, 36, 0.4, 0.38); // sample, else synth fallback
   }
 
   pickup(): void {
