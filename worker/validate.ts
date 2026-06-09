@@ -1,6 +1,9 @@
 // worker/validate.ts — pure combat + movement validation. No runtime deps.
 import {
   HIT_RADIUS,
+  HEAD_THRESHOLD,
+  EYE_HEIGHT,
+  CROUCH_EYE_HEIGHT,
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
   ST_ALIVE,
@@ -74,6 +77,23 @@ export function validateShoot(
   if (perp > HIT_RADIUS) return "aim";
 
   return null;
+}
+
+// Server-side headshot verification. A `head` claim from the client is only honored when the
+// geometry agrees: where the aim ray crosses the target's vertical column (its XZ position),
+// is the impact height more than HEAD_THRESHOLD above the target's feet? `target` is the EYE
+// position, so feet = eye.y - eyeHeight (eyeHeight depends on the target's crouch state). This
+// mirrors the client's isHead() but is authoritative, so a body/leg shot can't claim 2x.
+export function isHeadshot(shooter: Vec3, target: Vec3, dir: Vec3, crouched: boolean): boolean {
+  const dn = norm(dir);
+  const denomXZ = dn[0] * dn[0] + dn[2] * dn[2];
+  if (denomXZ < 1e-9) return false; // near-vertical aim: no meaningful column crossing
+  // Parameter along the ray closest to the target's XZ column.
+  const t = ((target[0] - shooter[0]) * dn[0] + (target[2] - shooter[2]) * dn[2]) / denomXZ;
+  if (t <= 0) return false; // target column is behind the shooter
+  const hitY = shooter[1] + dn[1] * t;
+  const feetY = target[1] - (crouched ? CROUCH_EYE_HEIGHT : EYE_HEIGHT);
+  return hitY - feetY > HEAD_THRESHOLD;
 }
 
 // Clamp a claimed new position to a plausible distance from the last known one.

@@ -6,12 +6,15 @@ import {
   norm,
   validateShoot,
   clampMove,
+  isHeadshot,
   type ShooterView,
   type TargetView,
 } from "../worker/validate";
 import {
   WEAPONS,
   HIT_RADIUS,
+  HEAD_THRESHOLD,
+  EYE_HEIGHT,
   ST_ALIVE,
   ST_DEAD,
   ST_PROTECTED,
@@ -184,5 +187,45 @@ describe("clampMove", () => {
     const out = clampMove(prev, next, 0);
     expect(Number.isFinite(out[0])).toBe(true);
     expect(out).not.toEqual(next);
+  });
+});
+
+describe("isHeadshot (server-authoritative head verification, issue #17)", () => {
+  // Standing target: eye at y=1 (EYE_HEIGHT), feet at y=0. Shooter eye at y=1.
+  const shooter: Vec3 = [0, EYE_HEIGHT, 0];
+  const target: Vec3 = [0, EYE_HEIGHT, 10];
+
+  it("a level eye-to-eye shot is a headshot (impact ~EYE_HEIGHT above feet > threshold)", () => {
+    // hitY = 1 at the target column, feet = 0, 1 - 0 = 1 > 0.8.
+    expect(isHeadshot(shooter, target, [0, 0, 1], false)).toBe(true);
+  });
+
+  it("a downward body/leg shot is NOT a headshot", () => {
+    // Aiming down so the ray crosses the target column near the feet.
+    expect(isHeadshot(shooter, target, [0, -0.1, 1], false)).toBe(false);
+  });
+
+  it("an upward shot over the head is below threshold only if it crosses low — high crossing is head", () => {
+    // Steep up: at the target's column the ray is well above the feet -> head.
+    expect(isHeadshot(shooter, target, [0, 0.3, 1], false)).toBe(true);
+  });
+
+  it("returns false when the target column is behind the shooter", () => {
+    expect(isHeadshot(shooter, target, [0, 0, -1], false)).toBe(false);
+  });
+
+  it("returns false for a near-vertical aim (no meaningful column crossing)", () => {
+    expect(isHeadshot(shooter, target, [0, 1, 0], false)).toBe(false);
+  });
+
+  it("uses the crouch eye height for the feet baseline", () => {
+    // Crouched target (eye at y=1 still, but feet = 1 - CROUCH_EYE_HEIGHT(0.6) = 0.4). A level
+    // shot at y=1 is 0.6 above feet < 0.8 -> NOT a head, where a standing target would be.
+    expect(isHeadshot(shooter, target, [0, 0, 1], true)).toBe(false);
+    expect(isHeadshot(shooter, target, [0, 0, 1], false)).toBe(true);
+  });
+
+  it("HEAD_THRESHOLD is shared with the client", () => {
+    expect(HEAD_THRESHOLD).toBe(0.8);
   });
 });

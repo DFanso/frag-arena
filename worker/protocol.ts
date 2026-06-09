@@ -18,6 +18,7 @@ export const EYE_HEIGHT = 1.0;                            // capsule top y at sp
 export const CROUCH_EYE_HEIGHT = 0.6;                    // capsule top y while crouching
 export const AIM_CONE_DOT = Math.cos((4 * Math.PI) / 180); // ~4 degrees (legacy; superseded by HIT_RADIUS)
 export const HIT_RADIUS = 1.2;                            // accept a shot whose aim ray passes within this of the target body
+export const HEAD_THRESHOLD = 0.8;                        // impact this far above the target's feet counts as a headshot (client + server)
 export const MAX_MOVE_SPEED = 12;                         // units/sec
 export const MOVE_SPEED_TOLERANCE = 1.6;                  // allow bursts (jump pads etc.)
 export const MOVE_BUDGET_SEC = 0.2;                       // anti-teleport token-bucket burst (sec of travel absorbed before clamping; tolerates network jitter)

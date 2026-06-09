@@ -108,7 +108,7 @@ import type {
   FallMsg,
   Weapon,
 } from "./protocol";
-import { validateShoot, chooseSpawn } from "./validate";
+import { validateShoot, chooseSpawn, isHeadshot } from "./validate";
 import { matchOutcome, rankPlayers } from "./match";
 
 interface PlayerRec {
@@ -493,8 +493,11 @@ export class GameRoomCore {
     // Fired, but the claimed hit was not valid (no/dead/protected target, range, aim).
     if (reject !== null || target === null) return;
 
-    const dmg = m.head ? weapon.damage * weapon.headMult : weapon.damage;
-    this.applyDamage(target, dmg, rec, m.head);
+    // Headshot is server-verified (issue #17): honor the client's `head` claim only when the
+    // aim ray actually crosses the target's head zone. A body/leg shot can no longer claim 2x.
+    const head = m.head && isHeadshot(rec.p, target.p, m.d, target.c);
+    const dmg = head ? weapon.damage * weapon.headMult : weapon.damage;
+    this.applyDamage(target, dmg, rec, head);
   }
 
   // Begin a reload of weapon `wRaw` if its magazine isn't full and reserve remains.

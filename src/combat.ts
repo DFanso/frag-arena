@@ -1,10 +1,11 @@
 // src/combat.ts
 // Hitscan raycast from the crosshair (NDC center) + left-click shoot wiring.
 import * as THREE from "three";
-import { ROCKET_MAX_RANGE, type Vec3 } from "../worker/protocol";
+import { ROCKET_MAX_RANGE, HEAD_THRESHOLD, type Vec3 } from "../worker/protocol";
 
-// Impact this far (or more) above the player's feet counts as a headshot.
-export const HEAD_THRESHOLD = 0.8;
+// Impact this far (or more) above the player's feet counts as a headshot. Sourced from protocol
+// so the client and the server's authoritative check (worker/validate isHeadshot) stay in sync.
+export { HEAD_THRESHOLD };
 
 export interface FireResult {
   hit: number | null;    // claimed target player id
