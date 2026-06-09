@@ -1,4 +1,22 @@
-# Cloudflare static-asset cache rules (served by the Workers Assets binding).
+# Cloudflare static-asset response headers (served by the Workers Assets binding).
+# Rules are matched top-down and their headers merged onto every matching response, so the
+# catch-all security block below applies site-wide; the path-specific Cache-Control rules that
+# follow only add/override their own header on top of it.
+
+# Security headers on every response.
+#  - CSP: scripts are Vite-built, hashed, same-origin modules (no inline <script>), so
+#    script-src 'self'. Inline styles ARE used — the index.html <style> block plus the HUD's
+#    innerHTML `style=` attributes (src/hud.ts) — so style-src needs 'unsafe-inline' (styles
+#    can't execute script; this stays A-grade). Textures/canvas use data:/blob: images; Three's
+#    loaders may spin up blob: workers; the room WebSocket is same-origin (ws:/wss:).
+#  - frame-ancestors 'none' (+ X-Frame-Options) blocks iframe embedding/clickjacking.
+#  - X-Content-Type-Options stops MIME sniffing; Referrer-Policy trims the referrer.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
 # Hashed JS/CSS never change content -> cache forever, immutable.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable

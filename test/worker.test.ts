@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { env, exports } from "cloudflare:workers";
+import { WS_CONN_LIMIT_PER_IP } from "../worker/protocol";
 
 // Helper: drive the Worker's default export through real workerd routing.
 // exports.default is typed as Fetcher (1-2 arg fetch) at compile time, but at
@@ -64,5 +65,31 @@ describe("worker routing", () => {
     expect(["welcome", "snap"]).toContain(parsed.t);
 
     ws.close();
+  });
+
+  it("throttles a flood of WS upgrades from one IP with 429", async () => {
+    // Use a dedicated CF-Connecting-IP so this test owns its own per-IP window and doesn't
+    // interfere with (or get tripped by) the other upgrade tests, which share the default bucket.
+    const ip = "203.0.113.7"; // TEST-NET-3, reserved for docs
+    const upgrade = (): Promise<Response> =>
+      (exports.default as unknown as { fetch: (r: Request, e: unknown, c: unknown) => Promise<Response> }).fetch(
+        new Request("https://example.com/ws/flood", {
+          headers: { Upgrade: "websocket", "CF-Connecting-IP": ip },
+        }),
+        env,
+        { waitUntil() {}, passThroughOnException() {} },
+      );
+
+    // The first WS_CONN_LIMIT_PER_IP upgrades are admitted (101 + a live socket we must close).
+    for (let i = 0; i < WS_CONN_LIMIT_PER_IP; i++) {
+      const res = await upgrade();
+      expect(res.status).toBe(101);
+      res.webSocket?.accept();
+      res.webSocket?.close();
+    }
+    // The next one over the limit is refused at the edge before reaching the DO.
+    const blocked = await upgrade();
+    expect(blocked.status).toBe(429);
+    expect(blocked.webSocket).toBeFalsy();
   });
 });
