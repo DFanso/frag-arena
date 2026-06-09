@@ -2,6 +2,8 @@
 
 export class Sfx {
   private ctx: AudioContext | undefined;
+  private masterGain: GainNode | undefined; // all blips route through this for a master volume
+  private volume = 1;                        // desired 0..1 (applied once the ctx/gain exist)
 
   /**
    * Create (or resume) the AudioContext. MUST be called from a user gesture handler
@@ -13,8 +15,17 @@ export class Sfx {
         window.AudioContext ??
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new Ctor();
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = this.volume;
+      this.masterGain.connect(this.ctx.destination);
     }
     if (this.ctx.state === "suspended") void this.ctx.resume();
+  }
+
+  /** Set the master volume (0..1); takes effect immediately and is remembered before unlock(). */
+  setVolume(v: number): void {
+    this.volume = Math.max(0, Math.min(1, v));
+    if (this.masterGain) this.masterGain.gain.value = this.volume;
   }
 
   shoot(): void {
@@ -68,7 +79,7 @@ export class Sfx {
     env.gain.exponentialRampToValueAtTime(gain, now + 0.005);
     env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
     osc.connect(env);
-    env.connect(ctx.destination);
+    env.connect(this.masterGain ?? ctx.destination);
     osc.start(now);
     osc.stop(now + dur + 0.02);
   }
