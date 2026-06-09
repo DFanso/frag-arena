@@ -7,6 +7,21 @@ import { ROCKET_MAX_RANGE, HEAD_THRESHOLD, type Vec3 } from "../worker/protocol"
 // so the client and the server's authoritative check (worker/validate isHeadshot) stay in sync.
 export { HEAD_THRESHOLD };
 
+// ---- Aim spread / bloom (#20) — purely client-side; the server stays HIT_RADIUS-authoritative.
+export const SPREAD_BLOOM_MAX = 0.05;     // max NDC bloom the spread can accumulate above base
+export const SPREAD_DECAY_PER_SEC = 0.12; // NDC of spread recovered per second toward base
+
+/** Pure: grow the spread by one shot's worth, clamped to base + SPREAD_BLOOM_MAX. */
+export function bumpSpread(cur: number, base: number, growth: number): number {
+  return Math.min(cur + growth, base + SPREAD_BLOOM_MAX);
+}
+
+/** Pure: decay the spread toward `base` over `dtMs`, never below base. */
+export function decaySpread(cur: number, base: number, dtMs: number): number {
+  if (cur <= base) return base;
+  return Math.max(base, cur - SPREAD_DECAY_PER_SEC * (dtMs / 1000));
+}
+
 export interface FireResult {
   hit: number | null;    // claimed target player id
   barrel: number | null; // claimed explosive-barrel id (mutually exclusive with hit)
@@ -50,8 +65,16 @@ const _center = new THREE.Vector2(0, 0);
 const _origin = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 
-// Cast from the crosshair (screen center) against the given meshes; return the claim.
-export function fireRay(camera: THREE.Camera, targets: THREE.Object3D[]): FireResult {
+// Cast from the crosshair against the given meshes; return the claim. `spread` (NDC cone radius,
+// #20) randomly offsets the ray within a disc so sustained fire blooms; 0 = pinpoint center.
+export function fireRay(camera: THREE.Camera, targets: THREE.Object3D[], spread = 0): FireResult {
+  if (spread > 0) {
+    const ang = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * spread; // sqrt → uniform over the disc, not centre-biased
+    _center.set(Math.cos(ang) * r, Math.sin(ang) * r);
+  } else {
+    _center.set(0, 0);
+  }
   _raycaster.setFromCamera(_center, camera);
 
   camera.getWorldPosition(_origin);

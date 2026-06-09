@@ -33,6 +33,11 @@ export function averagePing(buf: number[]): number {
   return Math.round(buf.reduce((a, b) => a + b, 0) / buf.length);
 }
 
+/** Pure: map an aim-spread NDC radius to the crosshair half-gap in pixels (#20). */
+export function crosshairGapPx(spreadNdc: number): number {
+  return 3 + Math.max(0, spreadNdc) * 220;
+}
+
 /**
  * Pure: return a NEW array sorted for scoreboard display.
  * Order: frags desc, then deaths asc, then id asc (deterministic tie-break).
@@ -141,6 +146,7 @@ export class Hud {
   private scopeEl: HTMLDivElement;
   private prompt: HTMLDivElement;
   private hitMarker: HTMLDivElement;
+  private crossSegs: HTMLDivElement[] = []; // [top, bottom, left, right] crosshair segments (#20)
   private scoreboard: HTMLDivElement;
   private killFeedEl: HTMLDivElement;
   private pingEl: HTMLDivElement;
@@ -167,14 +173,20 @@ export class Hud {
     root.style.cssText =
       "position:fixed;inset:0;pointer-events:none;font-family:monospace;z-index:10;";
 
-    // Crosshair (center cross).
+    // Crosshair: four segments around a center gap; the gap widens with aim spread/bloom (#20).
     const cross = document.createElement("div");
-    cross.style.cssText =
-      "position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;";
-    cross.innerHTML =
-      '<div style="position:absolute;left:8px;top:0;width:2px;height:18px;background:#fff;opacity:.7"></div>' +
-      '<div style="position:absolute;top:8px;left:0;height:2px;width:18px;background:#fff;opacity:.7"></div>';
+    cross.style.cssText = "position:absolute;left:50%;top:50%;width:0;height:0;";
+    const mkSeg = (vertical: boolean): HTMLDivElement => {
+      const s = document.createElement("div");
+      s.style.cssText =
+        "position:absolute;background:#fff;opacity:.75;" +
+        (vertical ? "width:2px;height:6px;left:-1px;" : "height:2px;width:6px;top:-1px;");
+      cross.appendChild(s);
+      return s;
+    };
+    this.crossSegs = [mkSeg(true), mkSeg(true), mkSeg(false), mkSeg(false)]; // top, bottom, left, right
     root.appendChild(cross);
+    this.setCrosshairSpread(0);
 
     // Hit marker (hidden until flashed).
     const hit = document.createElement("div");
@@ -569,6 +581,17 @@ export class Hud {
     ctx.fill();
 
     ctx.restore();
+  }
+
+  /** Widen/narrow the four crosshair segments from the current aim-spread cone (NDC) (#20). */
+  setCrosshairSpread(spreadNdc: number): void {
+    const gap = crosshairGapPx(spreadNdc);
+    const SEG = 6;
+    const [top, bottom, left, right] = this.crossSegs;
+    if (top) top.style.top = `${-gap - SEG}px`;
+    if (bottom) bottom.style.top = `${gap}px`;
+    if (left) left.style.left = `${-gap - SEG}px`;
+    if (right) right.style.left = `${gap}px`;
   }
 
   /** Feed a fresh round-trip latency sample; renders the smoothed, color-coded ping. */

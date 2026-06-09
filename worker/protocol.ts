@@ -149,14 +149,16 @@ export interface Weapon {
   adsZoom: number; // FOV multiplier while aiming down sights (1 = no zoom)
   scoped: boolean; // true → full-screen scope overlay on ADS (sniper)
   auto: boolean;   // true → fires continuously while the trigger is held (else one shot per click)
+  baseSpread: number;  // resting aim-spread cone radius (NDC); 0 = pinpoint. Client-side bloom (#20).
+  sprayGrowth: number; // spread added per shot, recovered over time; server stays HIT_RADIUS-authoritative.
 }
 // Weapon ids are array indices. Rifle (0) and Sniper (1) are always carried; Rocket (2) is a
 // tower pickup (see ROCKET_* above) and only usable while held — its ammo is tracked separately
 // (PlayerRec.rocketAmmo), not through the magazine/reserve system, and its blast uses ROCKET_*.
 export const WEAPONS: readonly Weapon[] = [
-  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 120, reloadMs: 1500, adsZoom: 0.8, scoped: false, auto: true },
-  { id: 1, name: "Sniper", damage: 90, headMult: 2, maxRange: 320, cooldownMs: 1100, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, auto: false },
-  { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, auto: false },
+  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 120, reloadMs: 1500, adsZoom: 0.8, scoped: false, auto: true, baseSpread: 0.006, sprayGrowth: 0.004 },
+  { id: 1, name: "Sniper", damage: 90, headMult: 2, maxRange: 320, cooldownMs: 1100, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, auto: false, baseSpread: 0.001, sprayGrowth: 0.002 },
+  { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, auto: false, baseSpread: 0, sprayGrowth: 0 },
 ];
 export const ROCKET_ID = 2; // index of the Rocket launcher in WEAPONS
 
