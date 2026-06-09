@@ -8,6 +8,7 @@ import {
   EYE_HEIGHT,
   ST_DEAD,
   GRENADE_START,
+  STARTING_CREDITS,
   BARREL_RADIUS,
   sanitizeRoom,
   sanitizeName,
@@ -449,6 +450,7 @@ async function main(): Promise<void> {
         hud.setHealth(ps.hp);
         hud.setGrenades(ps.g ?? 0);
         hud.setArmor(ps.a ?? 0);
+        hud.setCredits(ps.credits ?? 0); // server-authoritative credit balance (issue #25)
         // Latency: ack echoes the last input seq the server processed → RTT = now - its send time.
         const ackSeq = m.ack[myId];
         if (ackSeq !== undefined) {
@@ -629,6 +631,7 @@ async function main(): Promise<void> {
     hud.setRocket(false);
     hud.setArmor(0);
     hud.setSpring(0);
+    hud.setCredits(STARTING_CREDITS); // instant feedback; snapshots then confirm (issue #25)
   });
 
   net.on("matchover", (m: MatchOverMsg) => {
