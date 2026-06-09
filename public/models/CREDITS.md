@@ -20,12 +20,6 @@ Credit is given here voluntarily because these creators are great.
 | `fern.glb` | Fern | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/jqcanvH7D6 |
 | `fence.glb` | Fence | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/e02PFKKhbr |
 | `log.glb` | Wood Log | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/L4E32Wee6C |
-| `kit_wall.glb` | Castle Kit — Wall (straight stone wall segment) | Kenney | CC0 1.0 | Kenney Castle Kit 2.0 — https://kenney.nl/assets/castle-kit |
-| `kit_door.glb` | Castle Kit — Wall Doorway (wall with doorway opening) | Kenney | CC0 1.0 | Kenney Castle Kit 2.0 — https://kenney.nl/assets/castle-kit |
-| `kit_floor.glb` | Castle Kit — Tower Square Base (flat square floor/base tile) | Kenney | CC0 1.0 | Kenney Castle Kit 2.0 — https://kenney.nl/assets/castle-kit |
-| `kit_stairs.glb` | Castle Kit — Stairs Stone | Kenney | CC0 1.0 | Kenney Castle Kit 2.0 — https://kenney.nl/assets/castle-kit |
-| `kit_column.glb` | Castle Kit — Wall Pillar (column) | Kenney | CC0 1.0 | Kenney Castle Kit 2.0 — https://kenney.nl/assets/castle-kit |
-| `kit_broken.glb` | Castle Kit — Wall Half (short/half wall as ruined segment) | Kenney | CC0 1.0 | Kenney Castle Kit 2.0 — https://kenney.nl/assets/castle-kit |
 | `building_tower.glb` | Stone Tower (whole watch tower / keep) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/Rz4U5dZJz8 |
 | `building_house1.glb` | Fantasy House (complete cottage with tiled roof) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/BH2XHWUNmF |
 | `building_house2.glb` | House (complete small house, distinct style) | Quaternius | CC0 1.0 | Poly Pizza — https://poly.pizza/m/roqiHdrpgc |

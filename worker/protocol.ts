@@ -99,6 +99,7 @@ export const EXPLOSIVE_BARRELS: readonly Vec3[] = [
 // --- Fall damage + parachute ---
 export const FALL_SAFE_DIST = 7;        // a fall up to this height (units) does no damage
 export const FALL_DMG_PER_UNIT = 9;     // damage per unit fallen beyond FALL_SAFE_DIST (≈ lethal past ~18u)
+export const KZ_FLOOR = -20;            // out-of-bounds kill floor: a player whose eye y drops below this dies (issue #23)
 export const PARACHUTE_FALL_SPEED = 4.5; // capped descent speed (units/sec) while the chute is open
 export const PARACHUTE_GLIDE_SPEED = 8;  // horizontal glide speed while parachuting
 export const PARACHUTE_MIN_HEIGHT = 6;   // only offer "press E" when at least this high above the ground

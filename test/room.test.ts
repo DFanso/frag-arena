@@ -7,6 +7,7 @@ import {
   MAX_PLAYERS_PER_ROOM,
   SERVER_TICK_HZ,
   MAX_HP,
+  KZ_FLOOR,
   MAX_MOVE_SPEED,
   MOVE_SPEED_TOLERANCE,
   ST_ALIVE,
@@ -1369,6 +1370,58 @@ describe("GameRoom armor / fall / new pickups", () => {
       expect(ARMOR_AMOUNT).toBeLessThanOrEqual(MAX_ARMOR);
       const spring = broadcasts.find((m) => (m as { t?: string }).t === "sppickup") as { durationMs?: number } | undefined;
       expect(spring?.durationMs).toBe(SPRING_DURATION_MS);
+    });
+  });
+});
+
+describe("GameRoom out-of-bounds kill floor (issue #23)", () => {
+  it("falling below KZ_FLOOR is an instant suicide with no frag credit", async () => {
+    const stub = env.ROOMS.getByName("oob-suicide");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals & {
+        ingestInput: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
+      };
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const now = Date.now();
+      const faller = makeRec(1, [0, KZ_FLOOR + 1, 0], { inMatch: true });
+      const other = makeRec(2, [10, 1, 0], { inMatch: true });
+      inst.byId.set(1, faller);
+      inst.byId.set(2, other);
+      inst.players.set(faller.ws, faller);
+      inst.players.set(other.ws, other);
+
+      // A small downward move (within the anti-teleport budget) that crosses the kill floor.
+      inst.ingestInput(faller, { t: "in", seq: 1, ts: now, p: [0, KZ_FLOOR - 1, 0], r: [0, 0], v: [0, 0, 0] });
+
+      expect(faller.st).toBe(ST_DEAD);
+      expect(faller.deaths).toBe(1);
+      expect(faller.frags).toBe(0);
+      expect(other.frags).toBe(0); // no kill credit to anyone for a fall suicide
+      const kill = broadcasts.find((b) => (b as { t?: string }).t === "kill") as
+        | { by: number; on: number }
+        | undefined;
+      expect(kill).toBeDefined();
+      expect(kill!.by).toBe(1);
+      expect(kill!.on).toBe(1); // suicide (by === on)
+    });
+  });
+
+  it("staying above the kill floor does not kill", async () => {
+    const stub = env.ROOMS.getByName("oob-safe");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const inst = instance as unknown as RoomInternals & {
+        ingestInput: (rec: ReturnType<typeof makeRec>, m: unknown) => void;
+      };
+      inst.broadcast = () => {};
+      const now = Date.now();
+      const rec = makeRec(1, [0, KZ_FLOOR + 3, 0], { inMatch: true });
+      inst.byId.set(1, rec);
+      inst.players.set(rec.ws, rec);
+      // Move down but stay above the floor.
+      inst.ingestInput(rec, { t: "in", seq: 1, ts: now, p: [0, KZ_FLOOR + 1, 0], r: [0, 0], v: [0, 0, 0] });
+      expect(rec.st).toBe(ST_ALIVE);
+      expect(rec.deaths).toBe(0);
     });
   });
 });
