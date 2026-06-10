@@ -1,6 +1,7 @@
 // test/combat.test.ts
 import { describe, it, expect } from "vitest";
-import { findPlayerId, isHead, HEAD_THRESHOLD, bumpSpread, decaySpread, SPREAD_BLOOM_MAX, SPREAD_DECAY_PER_SEC } from "../src/combat";
+import * as THREE from "three";
+import { fireRay, findPlayerId, isHead, HEAD_THRESHOLD, bumpSpread, decaySpread, SPREAD_BLOOM_MAX, SPREAD_DECAY_PER_SEC } from "../src/combat";
 import { WEAPONS } from "../worker/protocol";
 
 // Minimal mock matching the bits of THREE.Object3D that findPlayerId reads.
@@ -83,6 +84,59 @@ describe("aim spread / bloom (issue #20)", () => {
   it("decaySpread with zero dt is a no-op above base", () => {
     const base = 0.006;
     expect(decaySpread(0.02, base, 0)).toBe(0.02);
+  });
+});
+
+describe("fireRay — pinpoint to the crosshair (screen centre)", () => {
+  // A perspective camera at eye height (0,1,0) aimed along `dir`. No renderer/WebGL needed —
+  // setFromCamera + intersectObjects are pure math.
+  function camLookingAlong(dir: THREE.Vector3): THREE.PerspectiveCamera {
+    const cam = new THREE.PerspectiveCamera(75, 16 / 9, 0.1, 500);
+    cam.position.set(0, 1, 0);
+    cam.lookAt(cam.position.clone().add(dir));
+    cam.updateMatrixWorld(true);
+    return cam;
+  }
+
+  function playerBox(x: number, y: number, z: number, id: number, w = 0.8, h = 1.7): THREE.Mesh {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.6));
+    mesh.position.set(x, y, z);
+    mesh.userData.playerId = id;
+    mesh.updateMatrixWorld(true);
+    return mesh;
+  }
+
+  it("hits a centred target and reports the exact camera-forward direction", () => {
+    const cam = camLookingAlong(new THREE.Vector3(0, 0, -1));
+    const res = fireRay(cam, [playerBox(0, 1, -5, 3)]);
+    expect(res.hit).toBe(3);
+    // Direction = the crosshair (camera forward), normalized.
+    expect(res.d[0]).toBeCloseTo(0, 6);
+    expect(res.d[1]).toBeCloseTo(0, 6);
+    expect(res.d[2]).toBeCloseTo(-1, 6);
+    // Impact lands dead-centre on the near face of the target.
+    expect(res.point).not.toBeNull();
+    expect(res.point![0]).toBeCloseTo(0, 4);
+    expect(res.point![1]).toBeCloseTo(1, 4);
+  });
+
+  it("reports the direction that was actually cast (matches camera world-direction) off-axis", () => {
+    const cam = camLookingAlong(new THREE.Vector3(1, -0.3, -1));
+    const fwd = new THREE.Vector3();
+    cam.getWorldDirection(fwd);
+    const res = fireRay(cam, []);
+    expect(res.d[0]).toBeCloseTo(fwd.x, 6);
+    expect(res.d[1]).toBeCloseTo(fwd.y, 6);
+    expect(res.d[2]).toBeCloseTo(fwd.z, 6);
+    expect(res.hit).toBeNull();
+    expect(res.point).toBeNull();
+  });
+
+  it("has zero spread variance — a target off the crosshair line is always missed", () => {
+    const cam = camLookingAlong(new THREE.Vector3(0, 0, -1));
+    const off = playerBox(1.5, 1, -5, 9, 0.2, 0.2); // small box well off the centre axis
+    // No randomness in the cast ray any more: the centre ray misses it every single time.
+    for (let i = 0; i < 50; i++) expect(fireRay(cam, [off]).hit).toBeNull();
   });
 });
 

@@ -195,9 +195,9 @@ export class WeaponController {
     this.clip[w]! -= 1;
     this.emit();
     const wp = WEAPONS[w]!;
-    const spread = this.zoomIdx > 0 ? this.currentSpread * 0.3 : this.currentSpread; // zoom tightens the cone
-    const res = fireRay(this.d.camera, this.d.getTargets(), spread);
-    this.currentSpread = bumpSpread(this.currentSpread, wp.baseSpread, wp.sprayGrowth); // bloom for the next shot
+    const res = fireRay(this.d.camera, this.d.getTargets()); // pinpoint to the crosshair (centre ray)
+    // Bloom the crosshair only (cosmetic recoil feedback, #20) — it no longer deviates the shot.
+    this.currentSpread = bumpSpread(this.currentSpread, wp.baseSpread, wp.sprayGrowth);
     this.d.send({ t: "shoot", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, w, hit: res.hit, head: res.head, barrel: res.barrel });
     this.d.onLocalShoot(res.hit !== null, w, res);
     if (this.clip[w]! <= 0) this.startReload(w);
