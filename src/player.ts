@@ -60,13 +60,16 @@ const SHOOT_CUE_MS = 350;
 const PLAYER_HEIGHT = 1.7; // visible character + hit-proxy height (feet at y=0 .. head at 1.7)
 const DEATH_HIDE_MS = 1400; // body stays for the Death clip (~1s) + a beat, then vanishes
 
-// Held-weapon grip offsets in wrist-bone space, per weapon id (tuned visually).
+// Held-weapon grip offsets in world-size units (the socket compensates the bone scale),
+// per weapon id — tuned against the ?posedebug=1 harness screenshots.
 const HELD_POS: Record<number, [number, number, number]> = {
-  0: [0, 0.06, 0.12], 1: [0, 0.06, 0.16], 2: [0, 0.1, 0.05],
+  0: [0, 0.06, 0.12], 1: [0, 0.06, 0.16], 2: [0, 0.16, 0.02],
 };
 const HELD_ROT: Record<number, [number, number, number]> = {
-  0: [0, Math.PI / 2, 0], 1: [0, Math.PI / 2, 0], 2: [0, Math.PI / 2, 0],
+  // The soldier pack's RocketLauncher is modeled muzzle-backward vs the guns — flip it.
+  0: [0, Math.PI / 2, 0], 1: [0, Math.PI / 2, 0], 2: [0, -Math.PI / 2, 0],
 };
+const _wristScale = new THREE.Vector3(); // scratch for the bone-scale compensation
 
 export class RemotePlayer {
   readonly id: number;
@@ -245,6 +248,9 @@ export class RemotePlayer {
 
   // Swap the held weapon mesh (driven by PlayerSnap.w). Clones the armory template into
   // the wrist socket with a per-weapon grip offset (HELD_POS/HELD_ROT, tuned visually).
+  // The rig's bones carry a huge world scale (~93×: tiny authored armature compensated by
+  // the node above), so the attachment is counter-scaled to land back in world units —
+  // HELD_POS / HELD_WEAPON_LEN are therefore plain world-size meters.
   setWeapon(id: number): void {
     if (id === this.heldId || !this.wrist) return;
     this.heldId = id;
@@ -252,9 +258,13 @@ export class RemotePlayer {
     const tpl = this.weaponTemplates[id];
     if (!tpl) return;
     this.heldWeapon = tpl.clone(true);
+    this.wrist.updateWorldMatrix(true, false);
+    const ws = this.wrist.getWorldScale(_wristScale).x || 1;
+    const inv = 1 / ws;
     const p = HELD_POS[id] ?? [0, 0.05, 0.1];
     const r = HELD_ROT[id] ?? [0, Math.PI / 2, 0];
-    this.heldWeapon.position.set(p[0], p[1], p[2]);
+    this.heldWeapon.scale.setScalar(inv);
+    this.heldWeapon.position.set(p[0] * inv, p[1] * inv, p[2] * inv);
     this.heldWeapon.rotation.set(r[0], r[1], r[2]);
     this.wrist.add(this.heldWeapon);
   }

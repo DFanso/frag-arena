@@ -4,13 +4,19 @@ import * as THREE from "three";
 import { extractWeaponTemplates, WEAPON_MESH_NAMES, HELD_WEAPON_LEN } from "../src/armory";
 
 // Synthetic stand-in for the soldier GLTF scene: named meshes like the real GLB.
+// RocketLauncher is modeled the way GLTFLoader emits a multi-primitive mesh: a NAMED
+// Group with unnamed Mesh children (the regression that hid all weapons at first).
 function fakeSoldier(): { scene: THREE.Group } {
   const scene = new THREE.Group();
-  for (const name of ["AK", "Sniper", "RocketLauncher", "Pistol", "Body"]) {
+  for (const name of ["AK", "Sniper", "Pistol", "Body"]) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(2, 0.4, 0.4), new THREE.MeshStandardMaterial());
     m.name = name;
     scene.add(m);
   }
+  const launcher = new THREE.Group();
+  launcher.name = "RocketLauncher";
+  launcher.add(new THREE.Mesh(new THREE.BoxGeometry(2, 0.5, 0.5), new THREE.MeshStandardMaterial()));
+  scene.add(launcher);
   return { scene };
 }
 

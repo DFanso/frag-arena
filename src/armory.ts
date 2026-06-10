@@ -15,32 +15,35 @@ export const WEAPON_MESH_NAMES: Record<number, string> = {
 export const HELD_WEAPON_LEN: Record<number, number> = { 0: 0.9, 1: 1.15, 2: 1.1 };
 
 // Extract one template Object3D per weapon id from the soldier GLTF (null per id on failure).
-// SkinnedMeshes are rebuilt as plain Meshes (geometry stays in bind pose — fine for a held prop).
+// Matches the NODE name (a multi-primitive GLTF mesh becomes a named Group with unnamed Mesh
+// children, so matching only THREE.Mesh objects misses it), clones the whole subtree, strips
+// the node transform, and recenters/normalizes so the template hangs cleanly off a hand bone.
 export function extractWeaponTemplates(soldier: GLTF | null): (THREE.Object3D | null)[] {
   const out: (THREE.Object3D | null)[] = [null, null, null];
   if (!soldier) return out;
   for (const idStr of Object.keys(WEAPON_MESH_NAMES)) {
     const id = Number(idStr);
     const want = WEAPON_MESH_NAMES[id]!.toLowerCase();
-    let found: THREE.Mesh | null = null;
+    let found: THREE.Object3D | null = null;
     soldier.scene.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      if (!found && mesh.isMesh && mesh.name.toLowerCase() === want) found = mesh;
+      if (!found && o.name.toLowerCase() === want) found = o;
     });
     if (!found) continue;
-    const src = found as THREE.Mesh;
-    const mesh = new THREE.Mesh(src.geometry, src.material); // un-skinned copy, bind pose
+    const obj = (found as THREE.Object3D).clone(true);
+    obj.position.set(0, 0, 0); // drop wherever the armory display parked it in model space
+    obj.rotation.set(0, 0, 0);
+    obj.scale.set(1, 1, 1);
     const holder = new THREE.Group();
-    holder.add(mesh);
+    holder.add(obj);
     // Center on the origin and normalize the largest dimension to the per-weapon length.
-    const box = new THREE.Box3().setFromObject(mesh);
+    const box = new THREE.Box3().setFromObject(obj);
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
     box.getSize(size);
     box.getCenter(center);
     const s = HELD_WEAPON_LEN[id]! / (Math.max(size.x, size.y, size.z) || 1);
-    mesh.scale.setScalar(s);
-    mesh.position.set(-center.x * s, -center.y * s, -center.z * s);
+    obj.scale.setScalar(s);
+    obj.position.set(-center.x * s, -center.y * s, -center.z * s);
     holder.traverse((o) => { o.userData["noHit"] = true; (o as THREE.Mesh).castShadow = true; });
     out[id] = holder;
   }

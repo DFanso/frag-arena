@@ -60,6 +60,10 @@ import { loadAssets } from "./assets";
 import { extractWeaponTemplates } from "./armory";
 import { Viewmodel } from "./viewmodel";
 
+// Dev pose-harness flag (?posedebug=1) — captured at page load because the start screen
+// rewrites the URL (history.replaceState drops extra params) before the game boots.
+const POSE_DEBUG = new URLSearchParams(location.search).has("posedebug");
+
 // ---- nickname entry screen --------------------------------------------------
 
 function randomRoomCode(): string {
@@ -322,6 +326,26 @@ async function main(): Promise<void> {
 
   // Held-weapon templates for remote players (AK/Sniper/RocketLauncher from the soldier GLB).
   const weaponTemplates = extractWeaponTemplates(reg.soldier);
+
+  // Dev pose harness (?posedebug=1): three slowly-turning dummy characters — one per weapon —
+  // held 5 units in front of the camera, so held-gun grips and animation poses can be tuned
+  // from screenshots without bots or pointer lock. Local-only; never spawns in normal play.
+  const poseDummies: RemotePlayer[] = [];
+  const _poseFwd = new THREE.Vector3();
+  const poseLight = new THREE.PointLight(0xffffff, 60, 30);
+  if (POSE_DEBUG) {
+    console.log("[pose] templates:", weaponTemplates.map((t) => (t ? "ok" : "MISSING")));
+    for (let w = 0; w < 3; w++) {
+      const dummy = new RemotePlayer(900 + w, `W${w}`, reg.character, weaponTemplates);
+      dummy.setWeapon(w);
+      console.log(`[pose] W${w} wrist:`, (dummy as unknown as { wrist: THREE.Object3D | null }).wrist?.name ?? "NOT FOUND",
+        "held:", (dummy as unknown as { heldWeapon: THREE.Object3D | null }).heldWeapon ? "yes" : "NO");
+      scene.add(dummy.group);
+      poseDummies.push(dummy);
+    }
+    scene.add(poseLight);
+    (window as unknown as Record<string, unknown>)["__pose"] = poseDummies; // runtime probing
+  }
 
   // Arena geometry + collision octree.
   const arena = buildArena(reg);
@@ -846,7 +870,8 @@ async function main(): Promise<void> {
 
   function sendInputIfDue(accum: number, dtMs: number): number {
     const a = accum + dtMs;
-    if (a >= CLIENT_SEND_MS && controls.isLocked && local !== undefined) {
+    // POSE_DEBUG keeps inputs flowing without pointer lock so the observer isn't idle-kicked.
+    if (a >= CLIENT_SEND_MS && (controls.isLocked || POSE_DEBUG) && local !== undefined) {
       const msg = local.buildInput(
         controls.getPosition(),
         controls.getRotation(),
@@ -889,6 +914,28 @@ async function main(): Promise<void> {
     const nowEpoch = Date.now();
     const serverNow = nowEpoch + clockOffset; // server-clock estimate for pickup respawn timing
     for (const rp of remotes.values()) rp.update(nowEpoch, dtMs);
+    // Pose-tuning dummies (?posedebug=1): keep the row in front of the camera, slowly turning.
+    if (poseDummies.length > 0) {
+      camera.getWorldDirection(_poseFwd);
+      _poseFwd.y = 0;
+      _poseFwd.normalize();
+      const rx = -_poseFwd.z, rz = _poseFwd.x; // camera-right on the ground plane
+      poseLight.position.set(camera.position.x + _poseFwd.x * 1.5, camera.position.y + 2, camera.position.z + _poseFwd.z * 1.5);
+      for (let i = 0; i < poseDummies.length; i++) {
+        const d = poseDummies[i]!;
+        const lateral = (i - 1) * 1.7;
+        d.group.position.set(
+          camera.position.x + _poseFwd.x * 3.2 + rx * lateral,
+          camera.position.y - EYE_HEIGHT,
+          camera.position.z + _poseFwd.z * 3.2 + rz * lateral,
+        );
+        d.group.rotation.y += dt * 0.5;
+        // Exercise the animation states: W0 alternates idle/aim-fire, W1 runs in place.
+        if (i === 0 && Math.floor(nowEpoch / 2000) % 2 === 0) d.playShoot();
+        if (i === 1) d.setVelocity([0, 0, -6]);
+        d.update(nowEpoch, dtMs);
+      }
+    }
     grenades.update(dt);
     blood.update(dt);
     tracers.update(dt);
