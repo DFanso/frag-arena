@@ -2191,3 +2191,96 @@ describe("GameRoom reconnect economy (review fix #12)", () => {
     a2.close();
   });
 });
+
+// ---- appended for issue #67: shootfx tracer broadcast ----
+
+describe("GameRoom.handleShoot shootfx broadcast (issue #67)", () => {
+  type ShootFx = { t: string; by: number; o: Vec3; d: Vec3; w: number };
+
+  it("a discharged miss still broadcasts a shootfx with the shooter's ray", async () => {
+    const stub = env.ROOMS.getByName("shootfx-miss");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const now = Date.now();
+      const shooter = makeRec(7, [0, 1, 0], { lastShotAt: now - 1000 });
+      inst.byId.set(7, shooter);
+      inst.players.set(shooter.ws, shooter);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: null, head: false,
+      });
+
+      const fx = broadcasts.find((b) => (b as { t?: string }).t === "shootfx") as ShootFx | undefined;
+      expect(fx).toBeDefined();
+      expect(fx!.by).toBe(7);
+      expect(fx!.o).toEqual([0, 1, 0]);
+      expect(fx!.d).toEqual([0, 0, 1]);
+      expect(fx!.w).toBe(0);
+      expect(broadcasts.find((b) => (b as { t?: string }).t === "hit")).toBeUndefined();
+    });
+  });
+
+  it("a valid hit broadcasts BOTH the shootfx and the hit", async () => {
+    const stub = env.ROOMS.getByName("shootfx-hit");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      const target = makeRec(2, [0, 1, 10]);
+      inst.byId.set(1, shooter);
+      inst.byId.set(2, target);
+      inst.players.set(shooter.ws, shooter);
+      inst.players.set(target.ws, target);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, -0.03, 1], w: 0, hit: 2, head: false,
+      });
+
+      expect(broadcasts.find((b) => (b as { t?: string }).t === "shootfx")).toBeDefined();
+      expect(broadcasts.find((b) => (b as { t?: string }).t === "hit")).toBeDefined();
+    });
+  });
+
+  it("no shootfx when the gun did not discharge (empty magazine)", async () => {
+    const stub = env.ROOMS.getByName("shootfx-empty");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000 });
+      shooter.ammo[0] = 0;
+      inst.byId.set(1, shooter);
+      inst.players.set(shooter.ws, shooter);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: null, head: false,
+      });
+
+      expect(broadcasts.find((b) => (b as { t?: string }).t === "shootfx")).toBeUndefined();
+    });
+  });
+
+  it("no shootfx for a lobby player (not in match)", async () => {
+    const stub = env.ROOMS.getByName("shootfx-lobby");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const broadcasts: unknown[] = [];
+      const inst = instance as unknown as RoomInternals;
+      inst.broadcast = (m: unknown) => broadcasts.push(m);
+      const now = Date.now();
+      const shooter = makeRec(1, [0, 1, 0], { lastShotAt: now - 1000, inMatch: false });
+      inst.byId.set(1, shooter);
+      inst.players.set(shooter.ws, shooter);
+
+      inst.handleShoot(shooter, {
+        t: "shoot", seq: 1, ts: now, o: [0, 1, 0], d: [0, 0, 1], w: 0, hit: null, head: false,
+      });
+
+      expect(broadcasts.find((b) => (b as { t?: string }).t === "shootfx")).toBeUndefined();
+    });
+  });
+});

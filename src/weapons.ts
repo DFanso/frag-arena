@@ -3,7 +3,7 @@
 // Ammo is client-predicted for instant HUD feedback; the server enforces it authoritatively.
 import * as THREE from "three";
 import { WEAPONS, GRENADE_COOLDOWN_MS, ROCKET_ID, ROCKET_CLIP, defaultOwnedWeapons, type ShootMsg, type ReloadMsg, type ThrowMsg, type RocketMsg } from "../worker/protocol";
-import { fireRay, fireRocket, bumpSpread, decaySpread } from "./combat";
+import { fireRay, fireRocket, bumpSpread, decaySpread, type FireResult } from "./combat";
 import { clampZoomLevel, zoomMultiplier, zoomSensitivityScale, isScopeActive } from "./zoom";
 
 export interface WeaponDeps {
@@ -15,7 +15,8 @@ export interface WeaponDeps {
   nextSeq: () => number;
   send: (m: ShootMsg | ReloadMsg | ThrowMsg | RocketMsg) => void;
   baseFov: number;
-  onLocalShoot: (hit: boolean, weaponId: number) => void;
+  // `res` is the hitscan ray result (tracer endpoint, #67); absent on rocket launches.
+  onLocalShoot: (hit: boolean, weaponId: number, res?: FireResult) => void;
   onAmmo: (clip: number, reserve: number, reloading: boolean) => void;
   onWeapon: (name: string, id: number) => void;
   onScope: (active: boolean) => void;
@@ -186,7 +187,7 @@ export class WeaponController {
     const res = fireRay(this.d.camera, this.d.getTargets(), spread);
     this.currentSpread = bumpSpread(this.currentSpread, wp.baseSpread, wp.sprayGrowth); // bloom for the next shot
     this.d.send({ t: "shoot", seq: this.d.nextSeq(), ts: Date.now(), o: res.o, d: res.d, w, hit: res.hit, head: res.head, barrel: res.barrel });
-    this.d.onLocalShoot(res.hit !== null, w);
+    this.d.onLocalShoot(res.hit !== null, w, res);
     if (this.clip[w]! <= 0) this.startReload(w);
   }
 
