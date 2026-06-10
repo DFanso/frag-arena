@@ -241,8 +241,10 @@ export interface Weapon {
 // tower pickup (see ROCKET_* above) and only usable while held — its ammo is tracked separately
 // (PlayerRec.rocketAmmo), not through the magazine/reserve system, and its blast uses ROCKET_*.
 export const WEAPONS: readonly Weapon[] = [
-  // master balance (Sniper 150/3000, Rifle reserve 10) + #28 zoomLevels + #20 spread + #26 cost/buyable.
-  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 10, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.02, cost: 0, buyable: false },
+  // master balance (Sniper 150/3000) + #28 zoomLevels + #20 spread + #26 cost/buyable.
+  // Rifle reserve 90 = three spare 30-round mags (was 10 — barely a third of a mag, which read
+  // as a bug); ammo crates still top the reserve back up to this max.
+  { id: 0, name: "Rifle", damage: 25, headMult: 2, maxRange: 200, cooldownMs: 120, clipSize: 30, reserveAmmo: 90, reloadMs: 1500, adsZoom: 0.8, scoped: false, zoomLevels: [1, 0.8], auto: true, baseSpread: 0.006, sprayGrowth: 0.02, cost: 0, buyable: false },
   { id: 1, name: "Sniper", damage: 150, headMult: 2, maxRange: 320, cooldownMs: 3000, clipSize: 5, reserveAmmo: 25, reloadMs: 2600, adsZoom: 0.4, scoped: true, zoomLevels: [1, 0.4, 0.2], auto: false, baseSpread: 0.001, sprayGrowth: 0.002, cost: 1500, buyable: true },
   { id: 2, name: "Rocket", damage: ROCKET_DAMAGE, headMult: 1, maxRange: ROCKET_MAX_RANGE, cooldownMs: 900, clipSize: ROCKET_CLIP, reserveAmmo: 0, reloadMs: 0, adsZoom: 0.92, scoped: false, zoomLevels: [1, 0.92], auto: false, baseSpread: 0, sprayGrowth: 0, cost: 0, buyable: false },
 ];
