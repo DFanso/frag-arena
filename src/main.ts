@@ -456,8 +456,10 @@ async function main(): Promise<void> {
     for (const ps of m.players) {
       if (ps.id !== myId) ensureRemote(ps);
     }
-    if (m.rejoin && m.matchEndsAt > 0) {
-      // Rejoined an in-progress match: stay in the match (a SpawnMsg repositions us).
+    if (m.resume) {
+      // The server put us straight back into the in-progress match (a SpawnMsg repositions us).
+      // `resume` — not `rejoin && matchEndsAt` — is the server's actual decision: a lobby player
+      // reconnecting during someone else's match must land back in the LOBBY (issue #72).
       phase = "match";
       lobby.hide();
       hud.hideResults();
@@ -466,6 +468,9 @@ async function main(): Promise<void> {
       phase = "lobby";
       lobby.show();
     }
+    // Restore buy-menu ownership after a reconnect (issue #72) — the server keeps bought
+    // weapons across the drop but the controller booted with the defaults.
+    if (m.rejoin) shootHandle?.setOwnedWeapons(m.owned);
   });
 
   // Reconnect feedback: show a banner the moment the socket drops, hide it once it reopens.
