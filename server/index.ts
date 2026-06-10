@@ -29,9 +29,12 @@ const app = new Hono();
 // Security headers on every response. The Cloudflare deploy gets these from public/_headers
 // (served by the Workers Assets binding); the Node host serves the same client, so it must set
 // the identical set itself. Keep the CSP in sync with public/_headers.
+// connect-src includes blob: because GLTFLoader fetch()es the textures embedded in .glb files
+// through blob: URLs (ImageBitmapLoader → connect-src, not img-src) — without it every model
+// renders untextured. blob: is local same-origin data, not an exfiltration vector.
 const CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; " +
+  "img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss: blob:; " +
   "worker-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'; " +
   "object-src 'none'; frame-ancestors 'none'";
 app.use("/*", async (c, next) => {
