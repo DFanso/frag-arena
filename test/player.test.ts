@@ -20,7 +20,7 @@ describe("LocalPlayer.buildInput", () => {
   it("builds an InMsg with an incrementing seq from nextSeq", () => {
     const lp = new LocalPlayer(1);
     const m1: InMsg = lp.buildInput([1, 2, 3], [0.5, -0.2], [0, 0, 1], 1000);
-    expect(m1).toEqual({ t: "in", seq: 1, ts: 1000, p: [1, 2, 3], r: [0.5, -0.2], v: [0, 0, 1], c: false, pc: false });
+    expect(m1).toEqual({ t: "in", seq: 1, ts: 1000, p: [1, 2, 3], r: [0.5, -0.2], v: [0, 0, 1], c: false, pc: false, w: 0 });
 
     const m2: InMsg = lp.buildInput([4, 5, 6], [0, 0], [0, 0, 0], 1066);
     expect(m2.seq).toBe(2);
