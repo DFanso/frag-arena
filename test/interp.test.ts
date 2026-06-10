@@ -117,3 +117,32 @@ describe("sampleBuffer", () => {
     expect(out!.p[2]).toBeCloseTo(15, 6);
   });
 });
+
+describe("velocity-aware sampling (spec 2026-06-10)", () => {
+  const snap = (t: number, x: number, vx = 0): Snapshot =>
+    ({ t, p: [x, 0, 0], r: [0, 0], v: [vx, 0, 0] });
+
+  it("matches endpoints exactly", () => {
+    const buf = [snap(0, 0, 10), snap(100, 1, 10)];
+    expect(sampleBuffer(buf, 0)!.p[0]).toBeCloseTo(0, 6);
+    expect(sampleBuffer(buf, 100)!.p[0]).toBeCloseTo(1, 6);
+  });
+  it("constant-velocity motion interpolates linearly (hermite degenerates to lerp)", () => {
+    const buf = [snap(0, 0, 10), snap(100, 1, 10)];
+    expect(sampleBuffer(buf, 50)!.p[0]).toBeCloseTo(0.5, 3);
+  });
+  it("eases direction reversals instead of kinking (cubic, not linear)", () => {
+    const buf = [snap(0, 0, 10), snap(100, 0, -10)];
+    expect(sampleBuffer(buf, 50)!.p[0]).toBeGreaterThan(0.05);
+  });
+  it("extrapolates past the newest snapshot using its velocity, capped at 100ms", () => {
+    const buf = [snap(0, 0, 10), snap(100, 1, 10)];
+    expect(sampleBuffer(buf, 150)!.p[0]).toBeCloseTo(1.5, 3);
+    expect(sampleBuffer(buf, 900)!.p[0]).toBeCloseTo(2.0, 3);
+  });
+  it("falls back to lerp when snapshots carry no velocity", () => {
+    const buf: Snapshot[] = [{ t: 0, p: [0, 0, 0], r: [0, 0] }, { t: 100, p: [1, 0, 0], r: [0, 0] }];
+    expect(sampleBuffer(buf, 50)!.p[0]).toBeCloseTo(0.5, 6);
+    expect(sampleBuffer(buf, 200)!.p[0]).toBeCloseTo(1, 6);
+  });
+});

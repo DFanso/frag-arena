@@ -524,7 +524,7 @@ async function main(): Promise<void> {
       } else {
         const rp = ensureRemote(ps);
         rp.setAlive(ps.st !== ST_DEAD); // dead players are hidden instantly
-        rp.addSnapshot({ t: m.ts, p: ps.p, r: ps.r });
+        rp.addSnapshot({ t: m.ts, p: ps.p, r: ps.r, v: ps.v });
         rp.setVelocity(ps.v);
         rp.setHealth(ps.hp);
         rp.setCrouch(ps.c ?? false);
