@@ -450,6 +450,7 @@ function makeRec(
     armor: opts.armor ?? 0,
     c: false,
     pc: false,
+    curWeapon: 0,
     posHistory: [] as { ts: number; p: Vec3 }[],
   };
 }
@@ -2380,6 +2381,34 @@ describe("GameRoom.handleShoot shootfx broadcast (issue #67)", () => {
       });
 
       expect(broadcasts.find((b) => (b as { t?: string }).t === "shootfx")).toBeUndefined();
+    });
+  });
+});
+
+// ---- appended for spec 2026-06-10: held weapon id in snapshots ----
+
+describe("held weapon id in snapshots (display-only)", () => {
+  it("stores a valid InMsg.w and echoes it in snapOf", async () => {
+    const stub = env.ROOMS.getByName("heldw-valid");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const i = instance as any;
+      const rec = makeRec(1, [0, 1, 0]);
+      i.byId.set(1, rec);
+      i.players.set(rec.ws, rec);
+      i.ingestInput(rec, { t: "in", seq: 1, ts: Date.now(), p: [0, 1, 0], r: [0, 0], v: [0, 0, 0], w: 1 });
+      expect(i.snapOf(rec).w).toBe(1);
+    });
+  });
+  it("ignores invalid w (non-integer / out of range) and keeps the last value", async () => {
+    const stub = env.ROOMS.getByName("heldw-invalid");
+    await runInDurableObject(stub, async (instance: GameRoom) => {
+      const i = instance as any;
+      const rec = makeRec(1, [0, 1, 0]);
+      i.byId.set(1, rec);
+      i.players.set(rec.ws, rec);
+      const base = { t: "in", seq: 1, ts: Date.now(), p: [0, 1, 0], r: [0, 0], v: [0, 0, 0] };
+      for (const bad of [1.5, -1, 99, "1"]) i.ingestInput(rec, { ...base, w: bad });
+      expect(i.snapOf(rec).w).toBe(0); // default stayed
     });
   });
 });

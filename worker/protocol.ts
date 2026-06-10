@@ -264,7 +264,9 @@ export const SPAWN_POINTS: readonly Vec3[] = [
 
 // ---- Client -> Server ----
 // `c` = crouching, `pc` = parachute deployed (both echoed in snapshots for remote rendering).
-export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; c?: boolean; pc?: boolean; }
+// `w` = currently-held weapon id (display-only: remotes render the right gun; combat still
+// validates per ShootMsg). Invalid/missing values leave the server's last-known value.
+export interface InMsg  { t: "in";    seq: number; ts: number; p: Vec3; r: Rot; v: Vec3; c?: boolean; pc?: boolean; w?: number; }
 export interface ShootMsg { t: "shoot"; seq: number; ts: number; o: Vec3; d: Vec3; w: number; hit: number | null; head: boolean; barrel?: number | null; }
 export interface ReadyMsg { t: "ready"; ready: boolean; }
 export interface ReloadMsg { t: "reload"; w: number; }
@@ -289,7 +291,7 @@ export type ClientMsg = InMsg | ShootMsg | ReadyMsg | ReloadMsg | ThrowMsg | Roc
 // ---- Server -> Client ----
 // c = crouching, g = grenade count, a = armor, pc = parachute deployed.
 export interface PlayerSnap {
-  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean; ai?: boolean; credits?: number;
+  id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean; ai?: boolean; credits?: number; w?: number;
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
 // `rejoin` = the token restored a saved identity (id/score/economy). `resume` = the server also

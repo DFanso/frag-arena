@@ -31,7 +31,8 @@ export class LocalPlayer {
   }
 
   // Build the next InMsg from explicit p/r/v + timestamp, bumping the seq counter.
-  buildInput(p: Vec3, r: Rot, v: Vec3, tsMs: number, crouch = false, parachute = false): InMsg {
+  // `w` = currently-held weapon id, so remotes can render the right gun (spec 2026-06-10).
+  buildInput(p: Vec3, r: Rot, v: Vec3, tsMs: number, crouch = false, parachute = false, w = 0): InMsg {
     return {
       t: "in",
       seq: this.nextSeq(),
@@ -41,6 +42,7 @@ export class LocalPlayer {
       v: [v[0], v[1], v[2]],
       c: crouch,
       pc: parachute,
+      w,
     };
   }
 

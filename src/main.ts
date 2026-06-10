@@ -844,6 +844,7 @@ async function main(): Promise<void> {
         Date.now(),
         controls.isCrouching,
         controls.isParachuting(),
+        shootHandle?.getCurrentWeapon() ?? 0,
       );
       pingSentAt.set(msg.seq, Date.now());
       net.send(msg);
