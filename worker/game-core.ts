@@ -116,6 +116,7 @@ import type {
   BarrelMsg,
   RocketMsg,
   RocketFxMsg,
+  ShootFxMsg,
   WeaponPickupMsg,
   GrenadePickupMsg,
   HealthPickupMsg,
@@ -489,10 +490,26 @@ export class GameRoomCore {
       rec.v = move.v;
       if (targetRec && botShouldFire(rec.p, move.yaw, targetRec.p, now, rifle, bs)) {
         bs.lastShotAt = now;
-        if (botHits(Math.random, BOT_ACCURACY)) {
+        const landed = botHits(Math.random, BOT_ACCURACY);
+        if (landed) {
           const dmg = Math.round(rifle.damage * zoneDamageMultiplier(ZONE_CHEST, rifle));
           this.applyDamage(targetRec, dmg, rec, false, false, ZONE_CHEST);
         }
+        // Tracer FX (issue #67): make bot fire visible. A missed roll gets a small sideways /
+        // vertical offset so the tracer visibly whiffs instead of passing through an unharmed target.
+        let dx = targetRec.p[0] - rec.p[0], dy = targetRec.p[1] - rec.p[1], dz = targetRec.p[2] - rec.p[2];
+        if (!landed) {
+          const hl = Math.hypot(dx, dz) || 1;
+          const side = (Math.random() < 0.5 ? 1 : -1) * (0.8 + Math.random() * 0.8);
+          const px = -dz / hl, pz = dx / hl; // horizontal perpendicular to the aim line
+          dx += px * side;
+          dz += pz * side;
+          dy += (Math.random() - 0.35) * 1.2;
+        }
+        const dl = Math.hypot(dx, dy, dz) || 1;
+        this.broadcast({
+          t: "shootfx", by: rec.id, o: [rec.p[0], rec.p[1], rec.p[2]], d: [dx / dl, dy / dl, dz / dl], w: 0,
+        } satisfies ShootFxMsg);
       }
     }
   }
@@ -700,6 +717,10 @@ export class GameRoomCore {
     // The gun fired. Record the shot time and consume a round (of the fired weapon).
     rec.lastShotAt = now;
     rec.ammo[w]! -= 1;
+
+    // Tracer FX (issue #67): every discharged round — hit, miss, or barrel — is visible to all
+    // clients. o/d are the shooter's claimed ray; cosmetic only, so no extra validation needed.
+    this.broadcast({ t: "shootfx", by: rec.id, o: m.o, d: m.d, w } satisfies ShootFxMsg);
 
     // Shot an explosive barrel? (validated against the barrel, not a player.)
     if (m.barrel != null) {

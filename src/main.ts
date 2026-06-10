@@ -10,6 +10,7 @@ import {
   GRENADE_START,
   STARTING_CREDITS,
   BARREL_RADIUS,
+  WEAPONS,
   sanitizeRoom,
   sanitizeName,
 } from "../worker/protocol";
@@ -29,6 +30,8 @@ import type {
   PickupMsg,
   BarrelMsg,
   RocketFxMsg,
+  ShootFxMsg,
+  Vec3,
   WeaponPickupMsg,
   GrenadePickupMsg,
   HealthPickupMsg,
@@ -47,6 +50,7 @@ import { Grenades } from "./projectiles";
 import { AmmoPickups, GrenadePickups, RocketPickups, HealthPickups, ArmorPickups, SpringPickups } from "./pickups";
 import { Barrels } from "./barrels";
 import { Blood } from "./blood";
+import { Tracers } from "./tracers";
 import { Doors } from "./doors";
 import { Hud, damageDirectionAngle } from "./hud";
 import { settings } from "./settings";
@@ -379,6 +383,10 @@ async function main(): Promise<void> {
   // Blood spray on hits + gib pieces on explosion kills.
   const blood = new Blood(scene);
 
+  // Bullet tracers (#67): pooled streaks for local + remote hitscan fire.
+  const tracers = new Tracers(scene);
+  const _muzzleTmp = new THREE.Vector3();
+
   // Explosive barrels (shoot to detonate; server validates + applies AoE).
   const barrels = new Barrels(scene, reg.barrel);
 
@@ -423,9 +431,15 @@ async function main(): Promise<void> {
   // Play a remote player's shoot cue: the muzzle animation plus a positional gunfire blip at the
   // shooter's world position (#21), so enemy fire is louder/closer-panned when nearby. The local
   // player's own shot SFX is handled non-positionally by WeaponController, so skip self.
+  const shootCueAt = new Map<number, number>(); // last cue time per shooter (see guard below)
   function playRemoteShoot(byId: number): void {
     const rp = remotes.get(byId);
     if (rp === undefined) return;
+    // A landed shot arrives as BOTH a shootfx (#67) and a hit/kill in the same broadcast batch —
+    // cue at most once per shot (the rifle's 120ms cooldown keeps real shots outside the window).
+    const now = performance.now();
+    if (now - (shootCueAt.get(byId) ?? -1e9) < 60) return;
+    shootCueAt.set(byId, now);
     rp.playShoot();
     if (byId !== myId) {
       const p = rp.group.position;
@@ -615,6 +629,19 @@ async function main(): Promise<void> {
     grenades.spawnRocket(m.o, m.d, m.p, m.travelMs); // render the rocket flying to its blast
   });
 
+  // Another player's hitscan discharge (#67): streak a tracer from near their muzzle along the
+  // shot ray. The local player's own tracer is drawn at fire time from the exact viewmodel
+  // muzzle, so skip self. Occlusion (depth test) clips the streak at walls naturally.
+  net.on("shootfx", (m: ShootFxMsg) => {
+    if (m.by === myId) return;
+    const range = WEAPONS[m.w]?.maxRange ?? 200;
+    // Start just ahead of and below the shooter's reported eye so the streak clears their model.
+    const start: Vec3 = [m.o[0] + m.d[0] * 0.8, m.o[1] + m.d[1] * 0.8 - 0.12, m.o[2] + m.d[2] * 0.8];
+    const end: Vec3 = [m.o[0] + m.d[0] * range, m.o[1] + m.d[1] * range, m.o[2] + m.d[2] * range];
+    tracers.spawn(start, end, m.w);
+    playRemoteShoot(m.by); // misses get the muzzle anim + positional crack too (deduped vs hit/kill)
+  });
+
   net.on("weaponpickup", (m: WeaponPickupMsg) => {
     rocketPickups.setTaken(m.id, m.availableAt); // hide the launcher on the specific tower
     if (m.by === myId) { shootHandle?.grantRocket(); sfx.pickup(); }
@@ -731,12 +758,22 @@ async function main(): Promise<void> {
     nextSeq: () => (local ? local.nextSeq() : 0),
     send: (m) => net.send(m),
     baseFov: camera.fov,
-    onLocalShoot: (hit, weaponId) => {
+    onLocalShoot: (hit, weaponId, res) => {
       // sniper (id 1) → its fire+reload clip; rocket launcher / "mortar" (id 2) → launcher thump; else machine-gun.
       sfx.shoot(weaponId === 1 ? "sniper" : weaponId === 2 ? "mortar" : "shoot");
       viewmodel.recoil(1 + (shootHandle?.getSpread() ?? 0) * 6); // kick scales with bloom (#20)
       viewmodel.flash();
       if (hit) hud.flashHitMarker();
+      // Tracer (#67) from the viewmodel muzzle to the impact (or far along the ray on a miss).
+      // `res` is only set for hitscan weapons — rockets keep their existing projectile visual.
+      if (res) {
+        const from = viewmodel.getMuzzleWorld(_muzzleTmp);
+        const range = WEAPONS[weaponId]?.maxRange ?? 200;
+        const end: Vec3 = res.point ?? [
+          res.o[0] + res.d[0] * range, res.o[1] + res.d[1] * range, res.o[2] + res.d[2] * range,
+        ];
+        tracers.spawn([from.x, from.y, from.z], end, weaponId);
+      }
     },
     onAmmo: (clip, reserve, reloading) => hud.setAmmo(clip, reserve, reloading),
     onWeapon: (name, id) => { hud.setWeapon(name); viewmodel.setWeapon(id); },
@@ -843,6 +880,7 @@ async function main(): Promise<void> {
     for (const rp of remotes.values()) rp.update(nowEpoch, dtMs);
     grenades.update(dt);
     blood.update(dt);
+    tracers.update(dt);
     doors.update(dt);
     pickups.update(dt, serverNow);
     grenadePickups.update(dt, serverNow);

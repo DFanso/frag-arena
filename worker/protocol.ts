@@ -310,6 +310,10 @@ export interface GrenadeMsg { t: "grenade"; o: Vec3; v: Vec3; fuseMs: number; } 
 export interface PickupMsg { t: "pickup"; id: number; by: number; availableAt: number; } // ammo crate taken
 export interface BarrelMsg { t: "barrel"; id: number; pos: Vec3; respawnAt: number; } // barrel detonated
 export interface RocketFxMsg { t: "rocketfx"; o: Vec3; d: Vec3; p: Vec3; travelMs: number; } // render a rocket flying to p, then a blast
+// Hitscan discharge (issue #67): broadcast for every shot that actually fired (hit or miss) so
+// clients draw a tracer from the shooter's muzzle along the ray. Cosmetic only — damage still
+// travels via HitMsg, and the server stays authoritative over what the shot struck.
+export interface ShootFxMsg { t: "shootfx"; by: number; o: Vec3; d: Vec3; w: number; }
 export interface WeaponPickupMsg { t: "weaponpickup"; id: number; by: number; availableAt: number; } // rocket launcher taken off tower `id`
 export interface GrenadePickupMsg { t: "gpickup"; id: number; by: number; availableAt: number; } // grenade crate taken
 export interface HealthPickupMsg { t: "hpickup"; id: number; by: number; availableAt: number; } // health syringe taken
@@ -318,7 +322,7 @@ export interface SpringPickupMsg { t: "sppickup"; id: number; by: number; availa
 // Buy-menu purchase confirmed (issue #26): sent only to the buyer. `weaponId` was granted +
 // equipped, `credits` is the new server-authoritative balance after the deduction.
 export interface BoughtMsg { t: "bought"; weaponId: number; credits: number; }
-export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg | ChatMsg | BoughtMsg;
+export type ServerMsg = SnapMsg | WelcomeMsg | HitMsg | KillMsg | SpawnMsg | LeaveMsg | MatchStartMsg | MatchOverMsg | LobbyMsg | GrenadeMsg | PickupMsg | BarrelMsg | RocketFxMsg | ShootFxMsg | WeaponPickupMsg | GrenadePickupMsg | HealthPickupMsg | ArmorPickupMsg | SpringPickupMsg | ChatMsg | BoughtMsg;
 
 // Credits economy (issue #25): add `amount` to a balance, clamping into [0, CREDITS_CAP]. Pure so
 // both the server award path and unit tests share one definition (negative inputs floor at 0).
