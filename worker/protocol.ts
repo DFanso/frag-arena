@@ -292,7 +292,11 @@ export interface PlayerSnap {
   id: number; name: string; p: Vec3; r: Rot; v: Vec3; hp: number; st: PlayerStateCode; frags: number; deaths: number; c?: boolean; g?: number; a?: number; pc?: boolean; ai?: boolean; credits?: number;
 }
 export interface SnapMsg    { t: "snap";    tick: number; ts: number; ack: Record<number, number>; players: PlayerSnap[]; }
-export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; token: string; rejoin: boolean; }
+// `rejoin` = the token restored a saved identity (id/score/economy). `resume` = the server also
+// put the player straight back into the ACTIVE match (a SpawnMsg follows) — a lobby player who
+// reconnects during someone else's match gets rejoin=true but resume=false (issue #72). `owned`
+// is the restored buy-menu ownership vector so the client can re-enable bought weapons.
+export interface WelcomeMsg { t: "welcome"; id: number; tickRate: number; players: PlayerSnap[]; matchEndsAt: number; fragLimit: number; token: string; rejoin: boolean; resume: boolean; owned: boolean[]; }
 export interface HitMsg     { t: "hit";     by: number; on: number; dmg: number; hp: number; head: boolean; zone?: HitZone; }
 export interface KillMsg    { t: "kill";    by: number; on: number; w: number; blast?: boolean; } // blast → client gibs the victim
 export interface SpawnMsg   { t: "spawn";   id: number; p: Vec3; prot: number; }

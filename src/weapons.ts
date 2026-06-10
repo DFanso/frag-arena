@@ -113,6 +113,18 @@ export class WeaponController {
     this.switchTo(id);
   }
 
+  // Reconnect (issue #72): adopt the server-restored ownership vector from the welcome so a
+  // rejoined player can switch to guns bought before the drop. The rocket launcher stays gated
+  // by hasRocket (a tower pickup, never ownership) and the free starter rifle is always owned.
+  setOwnedWeapons(owned: readonly boolean[]): void {
+    for (let w = 0; w < WEAPONS.length; w++) {
+      if (w === ROCKET_ID) continue;
+      this.owned[w] = !!owned[w];
+    }
+    this.owned[0] = true;
+    if (this.cur !== ROCKET_ID && !this.owned[this.cur]) this.switchTo(0);
+  }
+
   // Cycle the current weapon by `dir` (+1 next / -1 prev) within the available set.
   private cycle(dir: number): void {
     const avail = this.availableWeapons();

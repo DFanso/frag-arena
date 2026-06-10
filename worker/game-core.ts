@@ -204,7 +204,11 @@ export class GameRoomCore {
   // Register a new connection. Returns false if the room is full (the caller should close the
   // socket); the socket is NEVER added to players/byId in that case.
   public accept(conn: Conn, rawName: string | undefined, rawToken?: string, bots?: number): boolean {
-    if (this.players.size >= MAX_PLAYERS_PER_ROOM) return false;
+    // A reconnect that supersedes its own stale connection (issue #72) doesn't grow the room —
+    // the stale socket is removed in addPlayer — so it must not be bounced by the full check.
+    const supersedes = rawToken !== undefined &&
+      [...this.players.values()].some((r) => !r.bot && r.token === rawToken);
+    if (!supersedes && this.players.size >= MAX_PLAYERS_PER_ROOM) return false;
     this.addPlayer(conn, sanitizeName(rawName), rawToken);
     // The room creator may request AI bots (issue #31). Spawn them once, when the room has none
     // yet — later joiners' (absent/zero) bot counts are ignored so the count stays fixed.
@@ -321,6 +325,16 @@ export class GameRoomCore {
   private addPlayer(ws: Conn, name: string, rawToken?: string): void {
     const now = Date.now();
     this.pruneSavedIdentities(now);
+    // Reconnect race (issue #72): if the new connection arrives BEFORE the server has processed
+    // the old socket's close (common on a refresh), the token matches a live player — not a saved
+    // identity — and the rejoin would be refused. The token is the proof of identity (a random
+    // UUID only its owner holds), so supersede: remove the stale connection now, which saves the
+    // identity + frees the id, and let the normal restore path below pick it up.
+    if (rawToken) {
+      for (const live of this.players.values()) {
+        if (!live.bot && live.token === rawToken) { this.removePlayer(live.ws); break; }
+      }
+    }
     // Reconnect: a matching, still-free saved token restores the player's identity + score.
     const saved = rawToken ? this.savedIdentities.get(rawToken) : undefined;
     const rejoin = saved !== undefined && !this.byId.has(saved.id);
@@ -383,6 +397,8 @@ export class GameRoomCore {
       id,
       token,
       rejoin,
+      resume: resumeMatch, // back into the active match (a SpawnMsg follows) — issue #72
+      owned: rec.ownedWeapons.slice(), // restored buy-menu ownership for the client controller
       tickRate: SERVER_TICK_HZ,
       players: existing,
       matchEndsAt: this.matchActive ? this.matchEndsAt : 0,

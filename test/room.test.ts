@@ -2192,6 +2192,105 @@ describe("GameRoom reconnect economy (review fix #12)", () => {
   });
 });
 
+// ---- appended for issue #72: match rejoin fixes ----
+
+describe("match rejoin (issue #72)", () => {
+  it("a fresh join (no token) gets rejoin=false, resume=false, default ownership", async () => {
+    const stub = roomStub("rejoin-fresh");
+    const a = await connect(stub, "newbie");
+    const w = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    expect(w.rejoin).toBe(false);
+    expect(w.resume).toBe(false);
+    expect(w.owned).toEqual(defaultOwnedWeapons());
+    a.close();
+  });
+
+  it("a reconnect racing the old socket's close supersedes it and keeps the identity", async () => {
+    const stub = roomStub("rejoin-race");
+    const a = await connect(stub, "racer");
+    const w1 = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    // Reconnect with the same token WITHOUT closing the old socket first — i.e. the server has
+    // not yet processed the drop. The stale connection must be superseded, not block the rejoin.
+    const a2 = await connect(stub, "racer", w1.token);
+    const w2 = await nextMessage<WelcomeMsg>(a2, ["welcome"]);
+    expect(w2.rejoin).toBe(true);
+    expect(w2.id).toBe(w1.id);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      expect(i.players.size).toBe(1); // exactly one connection holds the identity
+      expect(i.byId.get(w1.id)).toBeDefined();
+    });
+    a2.close();
+  });
+
+  it("an in-match player who drops and reconnects resumes the match (resume=true + respawn)", async () => {
+    const stub = roomStub("rejoin-resume");
+    const a = await connect(stub, "fighter");
+    const w1 = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.startMatch();
+      i.removePlayer(i.byId.get(w1.id).ws);
+    });
+    const a2 = await connect(stub, "fighter", w1.token);
+    const w2 = await nextMessage<WelcomeMsg>(a2, ["welcome"]);
+    expect(w2.rejoin).toBe(true);
+    expect(w2.resume).toBe(true);
+    expect(w2.matchEndsAt).toBeGreaterThan(0);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      const rec = i.byId.get(w1.id);
+      expect(rec.inMatch).toBe(true);
+      expect(rec.st).not.toBe(ST_DEAD); // spawned straight back into the fight
+    });
+    a2.close();
+  });
+
+  it("a lobby player reconnecting during an active match lands back in the lobby (resume=false)", async () => {
+    const stub = roomStub("rejoin-lobby");
+    const a = await connect(stub, "spectator");
+    const wa = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    const b = await connect(stub, "fighter");
+    await nextMessage<WelcomeMsg>(b, ["welcome"]);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.startMatch();
+      const rec = i.byId.get(wa.id);
+      rec.inMatch = false; // was sitting in the lobby while the others fight
+      i.removePlayer(rec.ws);
+    });
+    const a2 = await connect(stub, "spectator", wa.token);
+    const w2 = await nextMessage<WelcomeMsg>(a2, ["welcome"]);
+    expect(w2.rejoin).toBe(true);
+    expect(w2.resume).toBe(false);          // NOT phantom-resumed into someone else's match
+    expect(w2.matchEndsAt).toBeGreaterThan(0); // even though a match is running
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      expect(i.byId.get(wa.id).inMatch).toBe(false);
+    });
+    a2.close();
+    b.close();
+  });
+
+  it("the welcome carries the restored owned-weapons vector after a mid-match drop", async () => {
+    const stub = roomStub("rejoin-owned");
+    const a = await connect(stub, "buyer");
+    const w1 = await nextMessage<WelcomeMsg>(a, ["welcome"]);
+    await runInDurableObject(stub, (instance) => {
+      const i = instance as any;
+      i.startMatch();
+      const rec = i.byId.get(w1.id);
+      rec.ownedWeapons[1] = true; // bought the sniper before the drop
+      i.removePlayer(rec.ws);
+    });
+    const a2 = await connect(stub, "buyer", w1.token);
+    const w2 = await nextMessage<WelcomeMsg>(a2, ["welcome"]);
+    expect(w2.rejoin).toBe(true);
+    expect(w2.owned[1]).toBe(true);
+    a2.close();
+  });
+});
+
 // ---- appended for issue #67: shootfx tracer broadcast ----
 
 describe("GameRoom.handleShoot shootfx broadcast (issue #67)", () => {
