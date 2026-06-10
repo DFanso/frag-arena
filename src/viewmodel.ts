@@ -21,6 +21,10 @@ const RIFLE_LEFT: ArmSpec = { hand: new THREE.Vector3(-0.04, -0.03, -0.06), pitc
 const ROCKET_RIGHT: ArmSpec = { hand: new THREE.Vector3(0.0, -0.085, 0.02), pitch: -1.1, yaw: 0.2 };  // launcher grip (lower)
 const ROCKET_LEFT: ArmSpec = { hand: new THREE.Vector3(-0.03, -0.02, 0.2), pitch: -1.0, yaw: -0.3 };  // support on the tube
 
+// Muzzle anchor z (view-space, from the weapon root) per weapon id — where tracers spawn (#67).
+// The guns are centered on the root and ~GUN_TARGET_LEN long; the sniper's barrel reaches -0.575.
+const MUZZLE_Z: readonly number[] = [-0.28, -0.58, -0.45];
+
 export class Viewmodel {
   private root: THREE.Group;
   private flashLight: THREE.PointLight;
@@ -30,6 +34,7 @@ export class Viewmodel {
   private curId = 0;
   private rightArm: THREE.Group;
   private leftArm: THREE.Group;
+  private muzzle: THREE.Object3D; // tracer spawn anchor at the held weapon's barrel tip (#67)
 
   constructor(camera: THREE.PerspectiveCamera, gun: GLTF | null) {
     this.root = new THREE.Group();
@@ -49,6 +54,10 @@ export class Viewmodel {
     this.applyArmSpec(this.leftArm, RIFLE_LEFT);
     this.root.add(this.rightArm);
     this.root.add(this.leftArm);
+
+    this.muzzle = new THREE.Object3D();
+    this.muzzle.position.set(0, 0, MUZZLE_Z[0]!);
+    this.root.add(this.muzzle);
 
     this.flashLight = new THREE.PointLight(0xffd9a0, 0, 6);
     this.flashLight.position.set(0, 0.02, -0.4);
@@ -77,6 +86,12 @@ export class Viewmodel {
       this.applyArmSpec(this.rightArm, RIFLE_RIGHT);
       this.applyArmSpec(this.leftArm, RIFLE_LEFT);
     }
+    this.muzzle.position.z = MUZZLE_Z[id] ?? MUZZLE_Z[0]!;
+  }
+
+  // World position of the held weapon's barrel tip — tracers start here, not at the camera (#67).
+  getMuzzleWorld(out: THREE.Vector3): THREE.Vector3 {
+    return this.muzzle.getWorldPosition(out);
   }
 
   recoil(scale = 1): void { this.recoilZ = RECOIL_BACK * scale; }

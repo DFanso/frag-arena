@@ -28,6 +28,7 @@ export interface FireResult {
   head: boolean;         // headshot claim
   o: Vec3;               // ray origin (camera world position)
   d: Vec3;               // ray direction (camera forward, normalized)
+  point: Vec3 | null;    // impact point when something was struck (tracer endpoint, #67)
 }
 
 // Minimal shape of what findPlayerId reads — lets it be unit-tested with mocks.
@@ -85,15 +86,16 @@ export function fireRay(camera: THREE.Camera, targets: THREE.Object3D[], spread 
   const intersects = _raycaster.intersectObjects(targets, true);
   for (const it of intersects) {
     if (it.object.userData["noHit"]) continue; // skip nameplates etc.
+    const point: Vec3 = [it.point.x, it.point.y, it.point.z];
     const barrel = findBarrelId(it.object as unknown as HasUserData);
-    if (barrel !== null) return { hit: null, barrel, head: false, o, d };
+    if (barrel !== null) return { hit: null, barrel, head: false, o, d, point };
     const id = findPlayerId(it.object as unknown as HasUserData);
     if (id === null) continue;
     // The target group origin is at the player's feet (base y).
     const playerBaseY = findGroupBaseY(it.object) ?? it.point.y;
-    return { hit: id, barrel: null, head: isHead(it.point.y, playerBaseY), o, d };
+    return { hit: id, barrel: null, head: isHead(it.point.y, playerBaseY), o, d, point };
   }
-  return { hit: null, barrel: null, head: false, o, d };
+  return { hit: null, barrel: null, head: false, o, d, point: null };
 }
 
 // What a fired rocket struck: the impact point in world space plus whether it was a player /
