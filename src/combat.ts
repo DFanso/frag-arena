@@ -7,9 +7,10 @@ import { ROCKET_MAX_RANGE, HEAD_THRESHOLD, type Vec3 } from "../worker/protocol"
 // so the client and the server's authoritative check (worker/validate isHeadshot) stay in sync.
 export { HEAD_THRESHOLD };
 
-// ---- Aim spread / bloom (#20) — purely client-side; the server stays HIT_RADIUS-authoritative.
-export const SPREAD_BLOOM_MAX = 0.05;     // max NDC bloom the spread can accumulate above base
-export const SPREAD_DECAY_PER_SEC = 0.12; // NDC of spread recovered per second toward base
+// ---- Aim spread / bloom (#20) — COSMETIC ONLY: drives the crosshair widen (Hud.setCrosshairSpread)
+// as recoil feedback. It no longer deviates the shot — bullets are pinpoint to the crosshair (fireRay).
+export const SPREAD_BLOOM_MAX = 0.05;     // max NDC bloom the crosshair can accumulate above base
+export const SPREAD_DECAY_PER_SEC = 0.12; // NDC of crosshair bloom recovered per second toward base
 
 /** Pure: grow the spread by one shot's worth, clamped to base + SPREAD_BLOOM_MAX. */
 export function bumpSpread(cur: number, base: number, growth: number): number {
@@ -62,20 +63,15 @@ export function isHead(impactY: number, playerBaseY: number): boolean {
 }
 
 const _raycaster = new THREE.Raycaster();
-const _center = new THREE.Vector2(0, 0);
+const _center = new THREE.Vector2(0, 0); // the crosshair = screen centre (NDC 0,0); never mutated
 const _origin = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 
-// Cast from the crosshair against the given meshes; return the claim. `spread` (NDC cone radius,
-// #20) randomly offsets the ray within a disc so sustained fire blooms; 0 = pinpoint center.
-export function fireRay(camera: THREE.Camera, targets: THREE.Object3D[], spread = 0): FireResult {
-  if (spread > 0) {
-    const ang = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random()) * spread; // sqrt → uniform over the disc, not centre-biased
-    _center.set(Math.cos(ang) * r, Math.sin(ang) * r);
-  } else {
-    _center.set(0, 0);
-  }
+// Cast from the crosshair (screen centre, NDC 0,0) against the given meshes and return the claim.
+// Bullets are pinpoint-accurate to the crosshair: the cast ray, the reported direction `d`, and the
+// tracer endpoint (`point`) are ALL the same centre ray, so whatever sits under the crosshair is
+// exactly what gets hit. Aim-spread/bloom (#20) is cosmetic (crosshair widen) and never offsets it.
+export function fireRay(camera: THREE.Camera, targets: THREE.Object3D[]): FireResult {
   _raycaster.setFromCamera(_center, camera);
 
   camera.getWorldPosition(_origin);
@@ -117,7 +113,7 @@ export function fireRocket(
   entityTargets: THREE.Object3D[],
   worldTargets: THREE.Object3D[],
 ): RocketResult {
-  _raycaster.setFromCamera(_center, camera);
+  _raycaster.setFromCamera(_center, camera); // screen centre — rockets also fire dead-on the crosshair
   const prevFar = _raycaster.far;
   _raycaster.far = ROCKET_MAX_RANGE;
 
