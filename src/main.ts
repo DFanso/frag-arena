@@ -57,6 +57,7 @@ import { settings } from "./settings";
 import { buildSettingsPanel, disposeSettingsPanel } from "./settings-ui";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
+import { extractWeaponTemplates } from "./armory";
 import { Viewmodel } from "./viewmodel";
 
 // ---- nickname entry screen --------------------------------------------------
@@ -319,6 +320,9 @@ async function main(): Promise<void> {
   // Load CC0 GLB assets before starting the game (progress shown on the loading overlay).
   const reg = await loadAssets((l, t, lbl) => loading.update(l, t, lbl));
 
+  // Held-weapon templates for remote players (AK/Sniper/RocketLauncher from the soldier GLB).
+  const weaponTemplates = extractWeaponTemplates(reg.soldier);
+
   // Arena geometry + collision octree.
   const arena = buildArena(reg);
   scene.add(arena.visual);
@@ -421,7 +425,7 @@ async function main(): Promise<void> {
   function ensureRemote(ps: PlayerSnap): RemotePlayer {
     let rp = remotes.get(ps.id);
     if (rp === undefined) {
-      rp = new RemotePlayer(ps.id, ps.name, reg.character);
+      rp = new RemotePlayer(ps.id, ps.name, reg.character, weaponTemplates);
       scene.add(rp.group);
       remotes.set(ps.id, rp);
     }
@@ -529,6 +533,7 @@ async function main(): Promise<void> {
         rp.setHealth(ps.hp);
         rp.setCrouch(ps.c ?? false);
         rp.setParachute(ps.pc ?? false);
+        rp.setWeapon(ps.w ?? 0);
       }
     }
   });
@@ -577,8 +582,13 @@ async function main(): Promise<void> {
       if (m.blast) blood.gib([p.x, p.y + 0.9, p.z]);
       else blood.spray([p.x, p.y + 1.1, p.z], 1.6);
     }
-    // The victim vanishes immediately (don't wait for the next snapshot).
-    remotes.get(m.on)?.setAlive(false);
+    // Gibbed victims vanish immediately (the gib FX replaces the body); normal kills play
+    // the Death animation and the body fades out shortly after (spec 2026-06-10).
+    const victimRp = remotes.get(m.on);
+    if (victimRp) {
+      if (m.blast) victimRp.setAlive(false);
+      else victimRp.playDeath();
+    }
     // Trigger shoot cue on the remote who got the kill (animation + positional gunfire SFX).
     playRemoteShoot(m.by);
   });

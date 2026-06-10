@@ -6,7 +6,7 @@ import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import { INTERP_DELAY_MS, EYE_HEIGHT, CROUCH_EYE_HEIGHT, MAX_HP, type Vec3, type Rot, type InMsg } from "../worker/protocol";
 import { sampleBuffer, type Snapshot } from "./interp";
-import { pickAnim } from "./anim";
+import { pickLocomotion } from "./anim";
 import { healthFraction, healthColor } from "./health-ui";
 
 // Snap the local player to the server position only when divergence exceeds this (world units).
@@ -58,6 +58,15 @@ export class LocalPlayer {
 
 const SHOOT_CUE_MS = 350;
 const PLAYER_HEIGHT = 1.7; // visible character + hit-proxy height (feet at y=0 .. head at 1.7)
+const DEATH_HIDE_MS = 1400; // body stays for the Death clip (~1s) + a beat, then vanishes
+
+// Held-weapon grip offsets in wrist-bone space, per weapon id (tuned visually).
+const HELD_POS: Record<number, [number, number, number]> = {
+  0: [0, 0.06, 0.12], 1: [0, 0.06, 0.16], 2: [0, 0.1, 0.05],
+};
+const HELD_ROT: Record<number, [number, number, number]> = {
+  0: [0, Math.PI / 2, 0], 1: [0, Math.PI / 2, 0], 2: [0, Math.PI / 2, 0],
+};
 
 export class RemotePlayer {
   readonly id: number;
@@ -78,8 +87,15 @@ export class RemotePlayer {
   private mixer: THREE.AnimationMixer | null = null;
   private actions: Record<string, THREE.AnimationAction> = {};
   private current: THREE.AnimationAction | null = null;
+  private wrist: THREE.Object3D | null = null; // Wrist.R bone — held-weapon socket
+  private heldWeapon: THREE.Object3D | null = null;
+  private heldId = -1;
+  private velocity: Vec3 = [0, 0, 0];
+  private yaw = 0;
+  private deadAt = 0; // performance.now() the death anim started (0 = alive)
 
-  constructor(id: number, name: string, character: GLTF | null) {
+  constructor(id: number, name: string, character: GLTF | null,
+              private weaponTemplates: readonly (THREE.Object3D | null)[] = []) {
     this.id = id;
     this.group = new THREE.Group();
 
@@ -131,8 +147,23 @@ export class RemotePlayer {
       };
       alias("Idle", find("idle") ?? clips[0]);
       alias("Running", find("run", "sprint") ?? find("walk") ?? find("idle") ?? clips[0]);
-      alias("Punch", find("punch", "attack", "shoot", "fire", "kick", "wave"));
-      this.current = this.actions["Idle"] ?? null;
+      // Locomotion set (spec 2026-06-10). Exact-suffix match ("...|Run") so the bare "Run"
+      // doesn't fuzzy-match Run_Back first; specific names fall back to substring search.
+      const findExact = (suffix: string): THREE.AnimationClip | undefined =>
+        clips.find((c) => {
+          const n = c.name.toLowerCase();
+          return n === suffix || n.endsWith(`|${suffix}`);
+        });
+      for (const key of ["Idle_Gun", "Idle_Gun_Shoot", "Run", "Run_Back", "Run_Left", "Run_Right", "Run_Shoot", "Death"]) {
+        alias(key, findExact(key.toLowerCase()) ?? (key === "Run" ? undefined : find(key.toLowerCase())));
+      }
+      // Held-weapon socket: the rig's right wrist. Fuzzy so a future character swap
+      // degrades to "no held gun" instead of crashing.
+      model.traverse((o) => {
+        if (!this.wrist && /wrist\.?r$/i.test(o.name.replace(/\s/g, ""))) this.wrist = o;
+      });
+      this.setWeapon(0);
+      this.current = this.actions["Idle_Gun"] ?? this.actions["Idle"] ?? null;
       this.current?.play();
     } else {
       // Fallback (model failed to load): a neutral soldier-olive box.
@@ -212,9 +243,53 @@ export class RemotePlayer {
     this.drawHealth(hp);
   }
 
-  // Show/hide the whole player (dead players vanish instantly, reappear on respawn).
+  // Swap the held weapon mesh (driven by PlayerSnap.w). Clones the armory template into
+  // the wrist socket with a per-weapon grip offset (HELD_POS/HELD_ROT, tuned visually).
+  setWeapon(id: number): void {
+    if (id === this.heldId || !this.wrist) return;
+    this.heldId = id;
+    if (this.heldWeapon) { this.wrist.remove(this.heldWeapon); this.heldWeapon = null; }
+    const tpl = this.weaponTemplates[id];
+    if (!tpl) return;
+    this.heldWeapon = tpl.clone(true);
+    const p = HELD_POS[id] ?? [0, 0.05, 0.1];
+    const r = HELD_ROT[id] ?? [0, Math.PI / 2, 0];
+    this.heldWeapon.position.set(p[0], p[1], p[2]);
+    this.heldWeapon.rotation.set(r[0], r[1], r[2]);
+    this.wrist.add(this.heldWeapon);
+  }
+
+  // Death (spec 2026-06-10): play the Death clip once; update() hides the body when it ends.
+  // Blast kills bypass this (the gib FX replaces the body) via setAlive(false).
+  playDeath(): void {
+    if (this.deadAt) return;
+    this.deadAt = performance.now();
+    this.nameplate.visible = false;
+    this.healthBar.visible = false;
+    this.parachute.visible = false;
+    const death = this.actions["Death"];
+    if (death) {
+      death.reset();
+      death.setLoop(THREE.LoopOnce, 1);
+      death.clampWhenFinished = true;
+      if (this.current) this.current.crossFadeTo(death, 0.1, false);
+      death.play();
+      this.current = death;
+    } else {
+      this.group.visible = false; // no clip → old instant-vanish behavior
+    }
+  }
+
+  // Show/hide the whole player; reviving also resets the death-anim state (respawn).
   setAlive(alive: boolean): void {
     this.group.visible = alive;
+    if (alive) {
+      this.deadAt = 0;
+      this.nameplate.visible = true;
+      this.healthBar.visible = true;
+      const idle = this.actions["Idle_Gun"] ?? this.actions["Idle"];
+      if (idle) { idle.reset().play(); this.current = idle; }
+    }
   }
 
   // Snap to a new position and drop buffered history (used on respawn so the player
@@ -231,6 +306,7 @@ export class RemotePlayer {
   }
 
   setVelocity(v: Vec3): void {
+    this.velocity = v;
     this.speedXZ = Math.hypot(v[0], v[2]);
   }
 
@@ -242,32 +318,39 @@ export class RemotePlayer {
   }
 
   playShoot(): void {
+    // The shooting window flips the locomotion picker to the *_Shoot clip variants —
+    // no more punch-the-air overlay (spec 2026-06-10).
     this.shootingUntil = performance.now() + SHOOT_CUE_MS;
-    const punch = this.actions["Punch"] ?? this.actions["Wave"];
-    if (punch) {
-      punch.reset();
-      punch.setLoop(THREE.LoopOnce, 1);
-      punch.clampWhenFinished = true;
-      punch.play();
-    }
   }
 
   update(nowMs: number, dtMs: number): void {
     const sample = sampleBuffer(this.buffer, nowMs - INTERP_DELAY_MS);
-    if (sample) {
+    if (sample && !this.deadAt) {
       // Server p is the eye position; subtract the (crouch-aware) eye height so the group
       // origin (the character's feet) stays on the ground.
       const eye = this.crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
       this.group.position.set(sample.p[0], sample.p[1] - eye, sample.p[2]);
       this.group.rotation.y = sample.r[0];
+      this.yaw = sample.r[0];
     }
     if (this.mixer) {
-      const want = pickAnim(this.speedXZ, this.shootingUntil, nowMs).base;
-      const next = this.actions[want];
-      if (next && next !== this.current) {
-        next.reset().play();
-        if (this.current) this.current.crossFadeTo(next, 0.2, false);
-        this.current = next;
+      if (this.deadAt) {
+        // Death clip plays out, then the body vanishes until respawn revives it.
+        if (nowMs - this.deadAt > DEATH_HIDE_MS) this.group.visible = false;
+      } else {
+        const shooting = nowMs < this.shootingUntil;
+        const want = pickLocomotion(this.velocity[0], this.velocity[2], this.yaw, shooting);
+        // Older/odd rigs without the gun set fall back to the generic aliases.
+        const next = this.actions[want.clip]
+          ?? this.actions[want.clip.startsWith("Idle") ? "Idle" : "Running"];
+        if (next) {
+          next.timeScale = want.timeScale;
+          if (next !== this.current) {
+            next.reset().play();
+            if (this.current) this.current.crossFadeTo(next, 0.15, false);
+            this.current = next;
+          }
+        }
       }
       this.mixer.update(dtMs / 1000);
     }
