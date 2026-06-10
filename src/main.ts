@@ -57,7 +57,12 @@ import { settings } from "./settings";
 import { buildSettingsPanel, disposeSettingsPanel } from "./settings-ui";
 import { Sfx } from "./audio";
 import { loadAssets } from "./assets";
+import { extractWeaponTemplates } from "./armory";
 import { Viewmodel } from "./viewmodel";
+
+// Dev pose-harness flag (?posedebug=1) — captured at page load because the start screen
+// rewrites the URL (history.replaceState drops extra params) before the game boots.
+const POSE_DEBUG = new URLSearchParams(location.search).has("posedebug");
 
 // ---- nickname entry screen --------------------------------------------------
 
@@ -319,6 +324,29 @@ async function main(): Promise<void> {
   // Load CC0 GLB assets before starting the game (progress shown on the loading overlay).
   const reg = await loadAssets((l, t, lbl) => loading.update(l, t, lbl));
 
+  // Held-weapon templates for remote players (AK/Sniper/RocketLauncher from the soldier GLB).
+  const weaponTemplates = extractWeaponTemplates(reg.soldier);
+
+  // Dev pose harness (?posedebug=1): three slowly-turning dummy characters — one per weapon —
+  // held 5 units in front of the camera, so held-gun grips and animation poses can be tuned
+  // from screenshots without bots or pointer lock. Local-only; never spawns in normal play.
+  const poseDummies: RemotePlayer[] = [];
+  const _poseFwd = new THREE.Vector3();
+  const poseLight = new THREE.PointLight(0xffffff, 60, 30);
+  if (POSE_DEBUG) {
+    console.log("[pose] templates:", weaponTemplates.map((t) => (t ? "ok" : "MISSING")));
+    for (let w = 0; w < 3; w++) {
+      const dummy = new RemotePlayer(900 + w, `W${w}`, reg.character, weaponTemplates);
+      dummy.setWeapon(w);
+      console.log(`[pose] W${w} wrist:`, (dummy as unknown as { wrist: THREE.Object3D | null }).wrist?.name ?? "NOT FOUND",
+        "held:", (dummy as unknown as { heldWeapon: THREE.Object3D | null }).heldWeapon ? "yes" : "NO");
+      scene.add(dummy.group);
+      poseDummies.push(dummy);
+    }
+    scene.add(poseLight);
+    (window as unknown as Record<string, unknown>)["__pose"] = poseDummies; // runtime probing
+  }
+
   // Arena geometry + collision octree.
   const arena = buildArena(reg);
   scene.add(arena.visual);
@@ -421,7 +449,7 @@ async function main(): Promise<void> {
   function ensureRemote(ps: PlayerSnap): RemotePlayer {
     let rp = remotes.get(ps.id);
     if (rp === undefined) {
-      rp = new RemotePlayer(ps.id, ps.name, reg.character);
+      rp = new RemotePlayer(ps.id, ps.name, reg.character, weaponTemplates);
       scene.add(rp.group);
       remotes.set(ps.id, rp);
     }
@@ -524,11 +552,12 @@ async function main(): Promise<void> {
       } else {
         const rp = ensureRemote(ps);
         rp.setAlive(ps.st !== ST_DEAD); // dead players are hidden instantly
-        rp.addSnapshot({ t: m.ts, p: ps.p, r: ps.r });
+        rp.addSnapshot({ t: m.ts, p: ps.p, r: ps.r, v: ps.v });
         rp.setVelocity(ps.v);
         rp.setHealth(ps.hp);
         rp.setCrouch(ps.c ?? false);
         rp.setParachute(ps.pc ?? false);
+        rp.setWeapon(ps.w ?? 0);
       }
     }
   });
@@ -577,8 +606,13 @@ async function main(): Promise<void> {
       if (m.blast) blood.gib([p.x, p.y + 0.9, p.z]);
       else blood.spray([p.x, p.y + 1.1, p.z], 1.6);
     }
-    // The victim vanishes immediately (don't wait for the next snapshot).
-    remotes.get(m.on)?.setAlive(false);
+    // Gibbed victims vanish immediately (the gib FX replaces the body); normal kills play
+    // the Death animation and the body fades out shortly after (spec 2026-06-10).
+    const victimRp = remotes.get(m.on);
+    if (victimRp) {
+      if (m.blast) victimRp.setAlive(false);
+      else victimRp.playDeath();
+    }
     // Trigger shoot cue on the remote who got the kill (animation + positional gunfire SFX).
     playRemoteShoot(m.by);
   });
@@ -836,7 +870,8 @@ async function main(): Promise<void> {
 
   function sendInputIfDue(accum: number, dtMs: number): number {
     const a = accum + dtMs;
-    if (a >= CLIENT_SEND_MS && controls.isLocked && local !== undefined) {
+    // POSE_DEBUG keeps inputs flowing without pointer lock so the observer isn't idle-kicked.
+    if (a >= CLIENT_SEND_MS && (controls.isLocked || POSE_DEBUG) && local !== undefined) {
       const msg = local.buildInput(
         controls.getPosition(),
         controls.getRotation(),
@@ -844,6 +879,7 @@ async function main(): Promise<void> {
         Date.now(),
         controls.isCrouching,
         controls.isParachuting(),
+        shootHandle?.getCurrentWeapon() ?? 0,
       );
       pingSentAt.set(msg.seq, Date.now());
       net.send(msg);
@@ -878,6 +914,28 @@ async function main(): Promise<void> {
     const nowEpoch = Date.now();
     const serverNow = nowEpoch + clockOffset; // server-clock estimate for pickup respawn timing
     for (const rp of remotes.values()) rp.update(nowEpoch, dtMs);
+    // Pose-tuning dummies (?posedebug=1): keep the row in front of the camera, slowly turning.
+    if (poseDummies.length > 0) {
+      camera.getWorldDirection(_poseFwd);
+      _poseFwd.y = 0;
+      _poseFwd.normalize();
+      const rx = -_poseFwd.z, rz = _poseFwd.x; // camera-right on the ground plane
+      poseLight.position.set(camera.position.x + _poseFwd.x * 1.5, camera.position.y + 2, camera.position.z + _poseFwd.z * 1.5);
+      for (let i = 0; i < poseDummies.length; i++) {
+        const d = poseDummies[i]!;
+        const lateral = (i - 1) * 1.7;
+        d.group.position.set(
+          camera.position.x + _poseFwd.x * 3.2 + rx * lateral,
+          camera.position.y - EYE_HEIGHT,
+          camera.position.z + _poseFwd.z * 3.2 + rz * lateral,
+        );
+        d.group.rotation.y += dt * 0.5;
+        // Exercise the animation states: W0 alternates idle/aim-fire, W1 runs in place.
+        if (i === 0 && Math.floor(nowEpoch / 2000) % 2 === 0) d.playShoot();
+        if (i === 1) d.setVelocity([0, 0, -6]);
+        d.update(nowEpoch, dtMs);
+      }
+    }
     grenades.update(dt);
     blood.update(dt);
     tracers.update(dt);

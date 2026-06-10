@@ -4,13 +4,14 @@ import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/addons/loaders/GLTFLoader.js";
 
 type GltfKey =
-  | "character" | "gun" | "crate" | "barrel" | "container" | "rock" | "tree"
+  | "character" | "soldier" | "gun" | "crate" | "barrel" | "container" | "rock" | "tree"
   | "grass" | "bush" | "fern" | "fence" | "log"
   | "bTower" | "bHouse1" | "bHouse2" | "bShed" | "bShed2"
   | "grenade";
 
 export interface AssetRegistry {
   character: GLTF | null;
+  soldier: GLTF | null; // weapon-mesh armory for held guns (spec 2026-06-10)
   gun: GLTF | null;
   crate: GLTF | null;
   barrel: GLTF | null;
@@ -34,6 +35,7 @@ export interface AssetRegistry {
 
 const FILES: Record<GltfKey, string> = {
   character: "/models/character_swat.glb",
+  soldier: "/models/character_soldier.glb",
   gun: "/models/gun.glb",
   crate: "/models/crate.glb",
   barrel: "/models/barrel.glb",
@@ -84,7 +86,7 @@ export async function loadAssets(onProgress?: (loaded: number, total: number, la
   const loader = new GLTFLoader();
   const texLoader = new THREE.TextureLoader();
   const reg: AssetRegistry = {
-    character: null, gun: null, crate: null, barrel: null, container: null, rock: null, tree: null,
+    character: null, soldier: null, gun: null, crate: null, barrel: null, container: null, rock: null, tree: null,
     grass: null, bush: null, fern: null, fence: null, log: null,
     bTower: null, bHouse1: null, bHouse2: null, bShed: null, bShed2: null, grenade: null,
     textures: { grass: null, stone: null },

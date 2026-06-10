@@ -305,6 +305,11 @@ export class WeaponController {
     return this.owned;
   }
 
+  /** Currently-held weapon id (rides along in InMsg so remotes render the right gun). */
+  getCurrentWeapon(): number {
+    return this.cur;
+  }
+
   // Refill every weapon and reset to the rifle (called on (re)spawn). The rocket launcher is a
   // tower pickup, so it is LOST on respawn (you must climb the tower again to get another).
   reset(): void {

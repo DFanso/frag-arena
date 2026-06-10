@@ -168,6 +168,7 @@ interface PlayerRec {
   armor: number;         // armor points (soak damage before hp; 0..MAX_ARMOR)
   c: boolean;            // crouching
   pc: boolean;           // parachute deployed (echoed for remote rendering)
+  curWeapon: number;     // held weapon id from InMsg.w (display-only; echoed in PlayerSnap.w)
   bot?: BotState;        // present iff this is a server-driven AI bot (no real connection)
   posHistory: PosSample[]; // lag-comp (issue #13): recent {ts,p} positions, oldest→newest, ~POSITION_BUFFER_MS deep
 }
@@ -379,6 +380,7 @@ export class GameRoomCore {
       armor: 0,
       c: false,
       pc: false,
+      curWeapon: 0,
       posHistory: [],
     };
 
@@ -454,7 +456,7 @@ export class GameRoomCore {
       reserveAmmo: WEAPONS.map((w) => w.reserveAmmo),
       reloadEndsAt: WEAPONS.map(() => 0),
       lastGrenadeAt: 0, grenades: 0, hasRocket: false, rocketAmmo: 0, armor: 0,
-      c: false, pc: false, lastChatAt: 0, posHistory: [], bot: newBotState(),
+      c: false, pc: false, curWeapon: 0, lastChatAt: 0, posHistory: [], bot: newBotState(),
     };
     this.players.set(conn, rec);
     this.byId.set(id, rec);
@@ -648,6 +650,10 @@ export class GameRoomCore {
     rec.v = [m.v[0], m.v[1], m.v[2]];
     rec.c = !!m.c;
     rec.pc = !!m.pc;
+    // Held weapon for remote rendering (display-only; combat still validates per ShootMsg).
+    if (typeof m.w === "number" && Number.isInteger(m.w) && m.w >= 0 && m.w < WEAPONS.length) {
+      rec.curWeapon = m.w;
+    }
     rec.lastInputAt = now;
     rec.lastSeq = m.seq;
 
@@ -1158,6 +1164,7 @@ export class GameRoomCore {
       pc: rec.pc,
       ai: rec.bot ? true : undefined,
       credits: rec.credits,
+      w: rec.curWeapon,
     };
   }
 

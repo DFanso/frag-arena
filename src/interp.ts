@@ -27,12 +27,22 @@ export interface Snapshot {
   t: number;
   p: Vec3;
   r: Rot;
+  v?: Vec3; // world-units/sec; enables cubic sampling + extrapolation when present
+}
+
+export const EXTRAPOLATE_MAX_MS = 100; // never project a remote further than this past its last snap
+
+// Cubic Hermite on one axis: positions p0/p1, tangents m0/m1 scaled to the segment duration.
+function hermite(p0: number, m0: number, p1: number, m1: number, t: number): number {
+  const t2 = t * t, t3 = t2 * t;
+  return (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0
+       + (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
 }
 
 // Pick interpolated {p,r} for renderTime from a time-sorted (ascending t) buffer.
-// Returns null if the buffer is empty. Clamps to the ends when renderTime is
-// outside the buffered window. Stale samples (older than the straddling pair) are
-// simply never selected because we scan to the latest pair bracketing renderTime.
+// With per-snapshot velocities this is cubic Hermite (smooth through direction changes,
+// spec 2026-06-10) plus bounded dead-reckoning past the newest snapshot; without them it
+// falls back to the original linear behavior. Returns null only when the buffer is empty.
 export function sampleBuffer(
   buf: Snapshot[],
   renderTime: number,
@@ -46,7 +56,14 @@ export function sampleBuffer(
     return { p: [...first.p] as Vec3, r: [...first.r] as Rot };
   }
   if (renderTime >= last.t) {
-    return { p: [...last.p] as Vec3, r: [...last.r] as Rot };
+    // Buffer ran dry: project along the last known velocity, hard-capped so a dropped
+    // stream parks the player nearby instead of sending them through a wall.
+    if (!last.v) return { p: [...last.p] as Vec3, r: [...last.r] as Rot };
+    const dt = Math.min(renderTime - last.t, EXTRAPOLATE_MAX_MS) / 1000;
+    return {
+      p: [last.p[0] + last.v[0] * dt, last.p[1] + last.v[1] * dt, last.p[2] + last.v[2] * dt],
+      r: [...last.r] as Rot,
+    };
   }
 
   // Find the adjacent pair (lo, hi) such that lo.t <= renderTime < hi.t.
@@ -56,10 +73,19 @@ export function sampleBuffer(
       const lo = buf[i - 1]!;
       const span = hi.t - lo.t;
       const t = span > 0 ? (renderTime - lo.t) / span : 0;
-      return {
-        p: lerpVec3(lo.p, hi.p, t),
-        r: [lerpAngle(lo.r[0], hi.r[0], t), lerpAngle(lo.r[1], hi.r[1], t)],
-      };
+      const r: Rot = [lerpAngle(lo.r[0], hi.r[0], t), lerpAngle(lo.r[1], hi.r[1], t)];
+      if (lo.v && hi.v && span > 0) {
+        const s = span / 1000; // tangents are u/s; scale into the segment's parameter space
+        return {
+          p: [
+            hermite(lo.p[0], lo.v[0] * s, hi.p[0], hi.v[0] * s, t),
+            hermite(lo.p[1], lo.v[1] * s, hi.p[1], hi.v[1] * s, t),
+            hermite(lo.p[2], lo.v[2] * s, hi.p[2], hi.v[2] * s, t),
+          ],
+          r,
+        };
+      }
+      return { p: lerpVec3(lo.p, hi.p, t), r };
     }
   }
 
